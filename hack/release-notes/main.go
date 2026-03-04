@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 )
 
@@ -162,46 +163,27 @@ func findPreviousTag(version string) (string, error) {
 	return "", fmt.Errorf("could not determine previous release tag")
 }
 
-// collectPRs returns PR numbers merged between previousTag and version.
+// collectPRs returns PR numbers merged between previousTag and version by
+// parsing merge commit messages from git history.
 func collectPRs(previousTag, version string) ([]string, error) {
-	mergeBase, err := gitOutput("merge-base", previousTag, version)
+	out, err := gitOutput("log", previousTag+".."+version, "--merges", "--oneline")
 	if err != nil {
-		return nil, fmt.Errorf("finding merge base: %w", err)
+		return nil, fmt.Errorf("listing merge commits: %w", err)
 	}
-	mergeBase = strings.TrimSpace(mergeBase)
+	return parsePRNumbers(out), nil
+}
 
-	mergeFrom, err := gitOutput("log", "-1", "--format=%cI", mergeBase)
-	if err != nil {
-		return nil, fmt.Errorf("getting merge-base date: %w", err)
-	}
-	mergeFrom = strings.TrimSpace(mergeFrom)
+var mergePRRe = regexp.MustCompile(`Merge pull request #(\d+)`)
 
-	mergeUntil, err := gitOutput("log", "-1", "--format=%cI", version)
-	if err != nil {
-		return nil, fmt.Errorf("getting version date: %w", err)
-	}
-	mergeUntil = strings.TrimSpace(mergeUntil)
-
-	out, err := runCommand("gh", "pr", "list",
-		"--state", "merged",
-		"--base", "main",
-		"--search", fmt.Sprintf("merged:%s..%s", mergeFrom, mergeUntil),
-		"--json", "number",
-		"--jq", ".[].number",
-		"--limit", "500",
-	)
-	if err != nil {
-		return nil, fmt.Errorf("listing merged PRs: %w", err)
-	}
-
+// parsePRNumbers extracts PR numbers from git log --merges --oneline output.
+func parsePRNumbers(gitLogOutput string) []string {
 	var numbers []string
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-		line = strings.TrimSpace(line)
-		if line != "" {
-			numbers = append(numbers, line)
+	for _, line := range strings.Split(gitLogOutput, "\n") {
+		if m := mergePRRe.FindStringSubmatch(line); m != nil {
+			numbers = append(numbers, m[1])
 		}
 	}
-	return numbers, nil
+	return numbers
 }
 
 // fetchPR retrieves the body and labels of a PR via the GitHub CLI.
