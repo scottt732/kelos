@@ -20,6 +20,49 @@ import (
 	"testing"
 )
 
+func TestParsePRNumbers(t *testing.T) {
+	tests := []struct {
+		name string
+		log  string
+		want []string
+	}{
+		{
+			name: "standard merge commits",
+			log:  "abc1234 Merge pull request #523 from org/feature-branch\ndef5678 Merge pull request #525 from org/bugfix-branch",
+			want: []string{"523", "525"},
+		},
+		{
+			name: "mixed merge and non-merge commits",
+			log:  "abc1234 Merge pull request #100 from org/branch\ndef5678 Some regular commit\nghi9012 Merge pull request #200 from org/other",
+			want: []string{"100", "200"},
+		},
+		{
+			name: "no merge commits",
+			log:  "abc1234 Some commit\ndef5678 Another commit",
+			want: nil,
+		},
+		{
+			name: "empty output",
+			log:  "",
+			want: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parsePRNumbers(tt.log)
+			if len(got) != len(tt.want) {
+				t.Fatalf("parsePRNumbers() returned %d items, want %d", len(got), len(tt.want))
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("parsePRNumbers()[%d] = %q, want %q", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
 func TestExtractNote(t *testing.T) {
 	tests := []struct {
 		name string
