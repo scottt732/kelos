@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sort"
 	"strconv"
 	"text/template"
 	"time"
@@ -406,13 +407,13 @@ func (r *TaskReconciler) updateStatus(ctx context.Context, task *kelosv1alpha1.T
 
 	// Discover pod name for the task
 	var podName string
-	if task.Status.PodName == "" {
-		var pods corev1.PodList
-		if err := r.List(ctx, &pods, client.InNamespace(task.Namespace), client.MatchingLabels{
-			"kelos.dev/task": task.Name,
-		}); err == nil && len(pods.Items) > 0 {
-			podName = pods.Items[0].Name
-		}
+	podListSucceeded := false
+	var pods corev1.PodList
+	if err := r.List(ctx, &pods, client.InNamespace(task.Namespace), client.MatchingLabels{
+		"kelos.dev/task": task.Name,
+	}); err == nil {
+		podListSucceeded = true
+		podName = latestTaskPodName(pods.Items)
 	}
 
 	// Determine the new phase based on Job status
@@ -444,7 +445,7 @@ func (r *TaskReconciler) updateStatus(ctx context.Context, task *kelosv1alpha1.T
 		}
 	}
 
-	podNameChanged := podName != "" && task.Status.PodName != podName
+	podNameChanged := podListSucceeded && task.Status.PodName != podName
 	phaseChanged := newPhase != ""
 
 	// Check if we should retry capturing outputs for an already-completed task
@@ -533,6 +534,24 @@ func (r *TaskReconciler) updateStatus(ctx context.Context, task *kelosv1alpha1.T
 	}
 
 	return ctrl.Result{}, nil
+}
+
+func latestTaskPodName(pods []corev1.Pod) string {
+	if len(pods) == 0 {
+		return ""
+	}
+
+	sortedPods := append([]corev1.Pod(nil), pods...)
+	sort.Slice(sortedPods, func(i, j int) bool {
+		left := sortedPods[i]
+		right := sortedPods[j]
+		if left.CreationTimestamp.Time.Equal(right.CreationTimestamp.Time) {
+			return left.Name < right.Name
+		}
+		return left.CreationTimestamp.Time.Before(right.CreationTimestamp.Time)
+	})
+
+	return sortedPods[len(sortedPods)-1].Name
 }
 
 // ttlExpired checks whether a finished Task has exceeded its TTL.

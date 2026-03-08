@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -48,7 +49,15 @@ func newLogsCommand(cfg *ClientConfig) *cobra.Command {
 				return fmt.Errorf("getting task: %w", err)
 			}
 
-			if task.Status.PodName == "" {
+			podName, err := resolveTaskPodName(ctx, cl, ns, task)
+			if err != nil {
+				return err
+			}
+
+			if podName == "" {
+				if isTerminalTaskPhase(task.Status.Phase) {
+					return fmt.Errorf("task %q has no live pod (task phase: %s)", args[0], task.Status.Phase)
+				}
 				if !follow {
 					return fmt.Errorf("task %q has no pod yet", args[0])
 				}
@@ -58,13 +67,20 @@ func newLogsCommand(cfg *ClientConfig) *cobra.Command {
 				if err != nil {
 					return err
 				}
+				podName, err = resolveTaskPodName(ctx, cl, ns, task)
+				if err != nil {
+					return err
+				}
+				if podName == "" {
+					return fmt.Errorf("task %q pod disappeared before logs could be streamed", args[0])
+				}
 			}
 
 			containerName := task.Spec.Type
 
 			if follow && task.Spec.WorkspaceRef != nil {
 				fmt.Fprintf(os.Stderr, "Streaming init container (git-clone) logs...\n")
-				if err := streamLogs(ctx, cs, ns, task.Status.PodName, "git-clone", follow); err != nil {
+				if err := streamLogs(ctx, cs, ns, podName, "git-clone", follow); err != nil {
 					return err
 				}
 			}
@@ -72,7 +88,7 @@ func newLogsCommand(cfg *ClientConfig) *cobra.Command {
 			if follow {
 				fmt.Fprintf(os.Stderr, "Streaming container (%s) logs...\n", containerName)
 			}
-			return streamAgentLogs(ctx, cs, ns, task.Status.PodName, containerName, task.Spec.Type, follow)
+			return streamAgentLogs(ctx, cs, ns, podName, containerName, task.Spec.Type, follow)
 		},
 	}
 
@@ -110,6 +126,37 @@ func waitForPod(ctx context.Context, cl client.Client, name, namespace string) (
 
 		time.Sleep(2 * time.Second)
 	}
+}
+
+func resolveTaskPodName(ctx context.Context, cl client.Client, namespace string, task *kelosv1alpha1.Task) (string, error) {
+	var pods corev1.PodList
+	if err := cl.List(ctx, &pods, client.InNamespace(namespace), client.MatchingLabels{
+		"kelos.dev/task": task.Name,
+	}); err != nil {
+		if task.Status.PodName != "" {
+			return task.Status.PodName, nil
+		}
+		return "", fmt.Errorf("listing task pods: %w", err)
+	}
+
+	if len(pods.Items) == 0 {
+		return "", nil
+	}
+
+	sort.Slice(pods.Items, func(i, j int) bool {
+		left := pods.Items[i]
+		right := pods.Items[j]
+		if left.CreationTimestamp.Time.Equal(right.CreationTimestamp.Time) {
+			return left.Name < right.Name
+		}
+		return left.CreationTimestamp.Time.Before(right.CreationTimestamp.Time)
+	})
+
+	return pods.Items[len(pods.Items)-1].Name, nil
+}
+
+func isTerminalTaskPhase(phase kelosv1alpha1.TaskPhase) bool {
+	return phase == kelosv1alpha1.TaskPhaseSucceeded || phase == kelosv1alpha1.TaskPhaseFailed
 }
 
 func streamLogs(ctx context.Context, cs *kubernetes.Clientset, namespace, podName, container string, follow bool) error {

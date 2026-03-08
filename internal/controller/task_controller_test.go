@@ -18,6 +18,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	kelosv1alpha1 "github.com/kelos-dev/kelos/api/v1alpha1"
@@ -406,5 +407,121 @@ func TestIsJobFailed(t *testing.T) {
 				t.Errorf("isJobFailed() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestLatestTaskPodName(t *testing.T) {
+	now := time.Now()
+	pods := []corev1.Pod{
+		{ObjectMeta: metav1.ObjectMeta{Name: "task-pod-old", CreationTimestamp: metav1.NewTime(now.Add(-2 * time.Minute))}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "task-pod-new", CreationTimestamp: metav1.NewTime(now.Add(-1 * time.Minute))}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "task-pod-mid", CreationTimestamp: metav1.NewTime(now.Add(-90 * time.Second))}},
+	}
+
+	if got := latestTaskPodName(pods); got != "task-pod-new" {
+		t.Fatalf("latestTaskPodName() = %q, want %q", got, "task-pod-new")
+	}
+}
+
+func TestUpdateStatusRefreshesPodName(t *testing.T) {
+	scheme := runtime.NewScheme()
+	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+	utilruntime.Must(kelosv1alpha1.AddToScheme(scheme))
+
+	now := time.Now()
+	task := &kelosv1alpha1.Task{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "task-1",
+			Namespace: "default",
+		},
+		Spec: kelosv1alpha1.TaskSpec{
+			Type:   "codex",
+			Prompt: "test",
+			Credentials: kelosv1alpha1.Credentials{
+				Type: kelosv1alpha1.CredentialTypeAPIKey,
+				SecretRef: kelosv1alpha1.SecretReference{
+					Name: "creds",
+				},
+			},
+		},
+		Status: kelosv1alpha1.TaskStatus{
+			Phase:   kelosv1alpha1.TaskPhaseRunning,
+			PodName: "task-pod-old",
+		},
+	}
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "task-pod-new",
+			Namespace:         "default",
+			CreationTimestamp: metav1.NewTime(now),
+			Labels: map[string]string{
+				"kelos.dev/task": "task-1",
+			},
+		},
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(task).
+		WithObjects(task, pod).
+		Build()
+
+	r := &TaskReconciler{Client: cl, Scheme: scheme}
+	if _, err := r.updateStatus(context.Background(), task, &batchv1.Job{}); err != nil {
+		t.Fatalf("updateStatus() error: %v", err)
+	}
+
+	updated := &kelosv1alpha1.Task{}
+	if err := cl.Get(context.Background(), client.ObjectKeyFromObject(task), updated); err != nil {
+		t.Fatalf("getting updated task: %v", err)
+	}
+	if updated.Status.PodName != "task-pod-new" {
+		t.Fatalf("task.Status.PodName = %q, want %q", updated.Status.PodName, "task-pod-new")
+	}
+}
+
+func TestUpdateStatusClearsStalePodNameWhenNoLivePodsRemain(t *testing.T) {
+	scheme := runtime.NewScheme()
+	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+	utilruntime.Must(kelosv1alpha1.AddToScheme(scheme))
+
+	task := &kelosv1alpha1.Task{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "task-1",
+			Namespace: "default",
+		},
+		Spec: kelosv1alpha1.TaskSpec{
+			Type:   "codex",
+			Prompt: "test",
+			Credentials: kelosv1alpha1.Credentials{
+				Type: kelosv1alpha1.CredentialTypeAPIKey,
+				SecretRef: kelosv1alpha1.SecretReference{
+					Name: "creds",
+				},
+			},
+		},
+		Status: kelosv1alpha1.TaskStatus{
+			Phase:   kelosv1alpha1.TaskPhaseFailed,
+			PodName: "task-pod-old",
+		},
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(task).
+		WithObjects(task).
+		Build()
+
+	r := &TaskReconciler{Client: cl, Scheme: scheme}
+	if _, err := r.updateStatus(context.Background(), task, &batchv1.Job{}); err != nil {
+		t.Fatalf("updateStatus() error: %v", err)
+	}
+
+	updated := &kelosv1alpha1.Task{}
+	if err := cl.Get(context.Background(), client.ObjectKeyFromObject(task), updated); err != nil {
+		t.Fatalf("getting updated task: %v", err)
+	}
+	if updated.Status.PodName != "" {
+		t.Fatalf("task.Status.PodName = %q, want empty", updated.Status.PodName)
 	}
 }
