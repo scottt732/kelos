@@ -28,7 +28,7 @@ Supports **Claude Code**, **OpenAI Codex**, **Google Gemini**, **OpenCode**, **C
 
 Kelos orchestrates the flow from external events to autonomous execution:
 
-<img width="2310" height="1582" alt="kelos-resources" src="https://github.com/user-attachments/assets/e36bdfef-5dfe-4e8f-ac74-9e66ab17f621" />
+<img width="2310" height="1582" alt="kelos-resources" src="https://github.com/user-attachments/assets/d3bdcd94-540c-43b8-9e14-1633c0c58dba" />
 
 You define what needs to be done, and Kelos handles the "how" — from cloning the right repo and injecting credentials to running the agent and capturing its outputs (branch names, commit SHAs, PR URLs, and token usage).
 
@@ -61,7 +61,7 @@ TaskSpawner watches external sources (e.g., GitHub Issues) and automatically cre
 
 Kelos develops itself. Six TaskSpawners run 24/7, each handling a different part of the development lifecycle — fully autonomous.
 
-<img width="2694" height="1966" alt="kelos-self-development" src="https://github.com/user-attachments/assets/7e8978ab-8b2f-496d-b3e3-d25ea9f01fbf" />
+<img width="2694" height="1966" alt="kelos-self-development" src="https://github.com/user-attachments/assets/a205f0c6-9eb4-4001-8ee6-5c8ab187fbea" />
 
 | TaskSpawner | Trigger | Model | Description |
 |---|---|---|---|
