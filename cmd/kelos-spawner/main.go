@@ -297,6 +297,15 @@ func runCycleWithSource(ctx context.Context, cl client.Client, key types.Namespa
 			task.Spec.Branch = branch
 		}
 
+		// Propagate upstream repo for fork workflows. Explicit template
+		// value takes precedence; otherwise derive from the source repo
+		// override (githubIssues.repo or githubPullRequests.repo).
+		if ts.Spec.TaskTemplate.UpstreamRepo != "" {
+			task.Spec.UpstreamRepo = ts.Spec.TaskTemplate.UpstreamRepo
+		} else if upstreamRepo := deriveUpstreamRepo(&ts); upstreamRepo != "" {
+			task.Spec.UpstreamRepo = upstreamRepo
+		}
+
 		if err := cl.Create(ctx, task); err != nil {
 			if apierrors.IsAlreadyExists(err) {
 				log.Info("Task already exists, skipping", "task", taskName)
@@ -462,6 +471,58 @@ func priorityLabelsForTaskSpawner(ts *kelosv1alpha1.TaskSpawner) []string {
 		return ts.Spec.When.GitHubPullRequests.PriorityLabels
 	}
 	return nil
+}
+
+// deriveUpstreamRepo extracts the owner/repo from the githubIssues.repo or
+// githubPullRequests.repo override, returning it in "owner/repo" format.
+// Returns an empty string when no override is configured.
+func deriveUpstreamRepo(ts *kelosv1alpha1.TaskSpawner) string {
+	var repoOverride string
+	if ts.Spec.When.GitHubIssues != nil && ts.Spec.When.GitHubIssues.Repo != "" {
+		repoOverride = ts.Spec.When.GitHubIssues.Repo
+	} else if ts.Spec.When.GitHubPullRequests != nil && ts.Spec.When.GitHubPullRequests.Repo != "" {
+		repoOverride = ts.Spec.When.GitHubPullRequests.Repo
+	}
+	if repoOverride == "" {
+		return ""
+	}
+	// Detect shorthand "owner/repo" format by checking that the first
+	// segment has no ":" (rules out SSH "git@host:owner/repo") and no "."
+	// (rules out "https://host/..."). Anything else is treated as a URL.
+	parts := strings.SplitN(repoOverride, "/", 2)
+	if len(parts) == 2 && !strings.Contains(parts[0], ":") && !strings.Contains(parts[0], ".") {
+		return repoOverride
+	}
+	// Parse full URL to extract owner/repo.
+	owner, repo := parseOwnerRepo(repoOverride)
+	if owner != "" && repo != "" {
+		return owner + "/" + repo
+	}
+	return ""
+}
+
+// parseOwnerRepo extracts owner and repo from a GitHub repository URL.
+// Supports HTTPS (https://host/owner/repo) and SSH (git@host:owner/repo).
+func parseOwnerRepo(repoURL string) (string, string) {
+	repoURL = strings.TrimSuffix(repoURL, ".git")
+	repoURL = strings.TrimSuffix(repoURL, "/")
+
+	// Handle SSH format: git@host:owner/repo
+	// SSH URLs have no "//" after the colon, unlike "https://".
+	if idx := strings.Index(repoURL, ":"); idx > 0 && !strings.HasPrefix(repoURL, "http") {
+		path := repoURL[idx+1:]
+		parts := strings.SplitN(path, "/", 2)
+		if len(parts) == 2 {
+			return parts[0], parts[1]
+		}
+	}
+
+	// Handle HTTPS format: https://host/owner/repo
+	parts := strings.Split(repoURL, "/")
+	if len(parts) >= 2 {
+		return parts[len(parts)-2], parts[len(parts)-1]
+	}
+	return "", ""
 }
 
 func parsePollInterval(s string) time.Duration {

@@ -1279,3 +1279,184 @@ func TestRunCycleWithSource_RetriggerRespectsMaxConcurrency(t *testing.T) {
 		t.Errorf("Expected spawner-running to remain, got %q", taskList.Items[0].Name)
 	}
 }
+
+func TestDeriveUpstreamRepo(t *testing.T) {
+	tests := []struct {
+		name string
+		ts   *kelosv1alpha1.TaskSpawner
+		want string
+	}{
+		{
+			name: "GitHubIssues with shorthand",
+			ts: &kelosv1alpha1.TaskSpawner{
+				Spec: kelosv1alpha1.TaskSpawnerSpec{
+					When: kelosv1alpha1.When{
+						GitHubIssues: &kelosv1alpha1.GitHubIssues{
+							Repo: "upstream-org/upstream-repo",
+						},
+					},
+				},
+			},
+			want: "upstream-org/upstream-repo",
+		},
+		{
+			name: "GitHubIssues with full URL",
+			ts: &kelosv1alpha1.TaskSpawner{
+				Spec: kelosv1alpha1.TaskSpawnerSpec{
+					When: kelosv1alpha1.When{
+						GitHubIssues: &kelosv1alpha1.GitHubIssues{
+							Repo: "https://github.com/upstream-org/upstream-repo.git",
+						},
+					},
+				},
+			},
+			want: "upstream-org/upstream-repo",
+		},
+		{
+			name: "GitHubPullRequests with shorthand",
+			ts: &kelosv1alpha1.TaskSpawner{
+				Spec: kelosv1alpha1.TaskSpawnerSpec{
+					When: kelosv1alpha1.When{
+						GitHubPullRequests: &kelosv1alpha1.GitHubPullRequests{
+							Repo: "upstream-org/upstream-repo",
+						},
+					},
+				},
+			},
+			want: "upstream-org/upstream-repo",
+		},
+		{
+			name: "GitHubPullRequests with GHES URL",
+			ts: &kelosv1alpha1.TaskSpawner{
+				Spec: kelosv1alpha1.TaskSpawnerSpec{
+					When: kelosv1alpha1.When{
+						GitHubPullRequests: &kelosv1alpha1.GitHubPullRequests{
+							Repo: "https://github.example.com/upstream-org/upstream-repo.git",
+						},
+					},
+				},
+			},
+			want: "upstream-org/upstream-repo",
+		},
+		{
+			name: "GitHubIssues with SSH URL",
+			ts: &kelosv1alpha1.TaskSpawner{
+				Spec: kelosv1alpha1.TaskSpawnerSpec{
+					When: kelosv1alpha1.When{
+						GitHubIssues: &kelosv1alpha1.GitHubIssues{
+							Repo: "git@github.com:upstream-org/upstream-repo.git",
+						},
+					},
+				},
+			},
+			want: "upstream-org/upstream-repo",
+		},
+		{
+			name: "No repo override",
+			ts: &kelosv1alpha1.TaskSpawner{
+				Spec: kelosv1alpha1.TaskSpawnerSpec{
+					When: kelosv1alpha1.When{
+						GitHubIssues: &kelosv1alpha1.GitHubIssues{},
+					},
+				},
+			},
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := deriveUpstreamRepo(tt.ts)
+			if got != tt.want {
+				t.Errorf("deriveUpstreamRepo() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRunCycleWithSource_PropagatesUpstreamRepo(t *testing.T) {
+	ts := &kelosv1alpha1.TaskSpawner{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "spawner",
+			Namespace: "default",
+		},
+		Spec: kelosv1alpha1.TaskSpawnerSpec{
+			When: kelosv1alpha1.When{
+				GitHubIssues: &kelosv1alpha1.GitHubIssues{
+					Repo: "https://github.com/upstream-org/upstream-repo.git",
+				},
+			},
+			TaskTemplate: kelosv1alpha1.TaskTemplate{
+				Type: "claude-code",
+				Credentials: kelosv1alpha1.Credentials{
+					Type:      kelosv1alpha1.CredentialTypeAPIKey,
+					SecretRef: kelosv1alpha1.SecretReference{Name: "my-secret"},
+				},
+			},
+		},
+	}
+	cl, key := setupTest(t, ts)
+
+	src := &fakeSource{
+		items: []source.WorkItem{
+			{ID: "1", Title: "Test issue"},
+		},
+	}
+
+	if err := runCycleWithSource(context.Background(), cl, key, src); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	var task kelosv1alpha1.Task
+	if err := cl.Get(context.Background(), types.NamespacedName{Name: "spawner-1", Namespace: "default"}, &task); err != nil {
+		t.Fatalf("Failed to get created task: %v", err)
+	}
+
+	if task.Spec.UpstreamRepo != "upstream-org/upstream-repo" {
+		t.Errorf("task.Spec.UpstreamRepo = %q, want %q", task.Spec.UpstreamRepo, "upstream-org/upstream-repo")
+	}
+}
+
+func TestRunCycleWithSource_ExplicitUpstreamRepoTakesPrecedence(t *testing.T) {
+	ts := &kelosv1alpha1.TaskSpawner{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "spawner",
+			Namespace: "default",
+		},
+		Spec: kelosv1alpha1.TaskSpawnerSpec{
+			When: kelosv1alpha1.When{
+				GitHubIssues: &kelosv1alpha1.GitHubIssues{
+					Repo: "https://github.com/upstream-org/upstream-repo.git",
+				},
+			},
+			TaskTemplate: kelosv1alpha1.TaskTemplate{
+				Type: "claude-code",
+				Credentials: kelosv1alpha1.Credentials{
+					Type:      kelosv1alpha1.CredentialTypeAPIKey,
+					SecretRef: kelosv1alpha1.SecretReference{Name: "my-secret"},
+				},
+				UpstreamRepo: "explicit-org/explicit-repo",
+			},
+		},
+	}
+	cl, key := setupTest(t, ts)
+
+	src := &fakeSource{
+		items: []source.WorkItem{
+			{ID: "1", Title: "Test issue"},
+		},
+	}
+
+	if err := runCycleWithSource(context.Background(), cl, key, src); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	var task kelosv1alpha1.Task
+	if err := cl.Get(context.Background(), types.NamespacedName{Name: "spawner-1", Namespace: "default"}, &task); err != nil {
+		t.Fatalf("Failed to get created task: %v", err)
+	}
+
+	if task.Spec.UpstreamRepo != "explicit-org/explicit-repo" {
+		t.Errorf("task.Spec.UpstreamRepo = %q, want %q", task.Spec.UpstreamRepo, "explicit-org/explicit-repo")
+	}
+}
