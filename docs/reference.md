@@ -114,6 +114,7 @@ GitHub Apps are preferred over PATs for production use because they offer fine-g
 | Field | Description | Required |
 |-------|-------------|----------|
 | `spec.taskTemplate.workspaceRef.name` | Workspace resource (repo URL, auth, and clone target for spawned Tasks) | Yes (when using `githubIssues` or `githubPullRequests`) |
+| `spec.when.githubIssues.repo` | Override repository to poll for issues (in `owner/repo` format or full URL); defaults to workspace repo URL | No |
 | `spec.when.githubIssues.labels` | Filter issues by labels | No |
 | `spec.when.githubIssues.excludeLabels` | Exclude issues with these labels | No |
 | `spec.when.githubIssues.state` | Filter by state: `open`, `closed`, `all` (default: `open`) | No |
@@ -123,6 +124,7 @@ GitHub Apps are preferred over PATs for production use because they offer fine-g
 | `spec.when.githubIssues.assignee` | Filter by assignee username; use `"*"` for any assignee or `"none"` for unassigned | No |
 | `spec.when.githubIssues.author` | Filter by issue author username | No |
 | `spec.when.githubIssues.priorityLabels` | Priority-order labels for task selection when `maxConcurrency` is set; index 0 is highest priority | No |
+| `spec.when.githubPullRequests.repo` | Override repository to poll for PRs (in `owner/repo` format or full URL); defaults to workspace repo URL | No |
 | `spec.when.githubPullRequests.labels` | Filter pull requests by labels | No |
 | `spec.when.githubPullRequests.excludeLabels` | Exclude pull requests with these labels | No |
 | `spec.when.githubPullRequests.state` | Filter by state: `open`, `closed`, `all` (default: `open`) | No |
