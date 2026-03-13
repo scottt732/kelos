@@ -114,5 +114,6 @@ spec:
         - Strategic proposals, new use cases, integrations, CRD extensions → kelos-fake-strategist
         - Documentation, CLI UX, error messages → kelos-fake-user
         - Agent configuration based on PR reviews → kelos-config-update
+        - Coding agent image version updates → kelos-image-update
       - If after review you find nothing actionable to improve, exit without creating an issue or PR. Not every run needs to produce output
   pollInterval: 1m

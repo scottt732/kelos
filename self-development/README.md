@@ -6,7 +6,7 @@ This directory contains real-world orchestration patterns used by the Kelos proj
 
 <img width="2694" height="1966" alt="kelos-self-development" src="https://github.com/user-attachments/assets/10719599-426e-4c3d-87a0-cde43e1b3113" />
 
-All agents share an `AgentConfig` (`agentconfig.yaml`) that defines git identity, comment signatures, and standard constraints.
+Each TaskSpawner references an `AgentConfig` that defines git identity, comment signatures, and standard constraints. Some agents (triage, pr-responder, squash-commits, config-update) share the base `agentconfig.yaml` (`kelos-dev-agent`), while others (workers, fake-user, fake-strategist, self-update, image-update) define their own `AgentConfig` inline.
 
 ## Prerequisites
 
@@ -222,6 +222,29 @@ Creates GitHub issues for actionable improvements found.
 **Deploy:**
 ```bash
 kubectl apply -f self-development/kelos-self-update.yaml
+```
+
+### kelos-image-update.yaml
+
+Runs daily to check for newer versions of coding agent images and creates issues to update them.
+
+| | |
+|---|---|
+| **Trigger** | Cron `0 3 * * *` (daily at 03:00 UTC) |
+| **Model** | Sonnet |
+| **Concurrency** | 1 |
+
+Checks the following coding agents for updates:
+- **claude-code** — `@anthropic-ai/claude-code` npm package
+- **codex** — `@openai/codex` npm package
+- **gemini** — `@google/gemini-cli` npm package
+- **opencode** — `opencode-ai` npm package
+
+Creates at most one issue per agent. Skips agents that are already up to date or already have an open update issue.
+
+**Deploy:**
+```bash
+kubectl apply -f self-development/kelos-image-update.yaml
 ```
 
 ## Customizing for Your Repository
