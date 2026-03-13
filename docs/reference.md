@@ -4,7 +4,7 @@
 
 | Field | Description | Required |
 |-------|-------------|----------|
-| `spec.type` | Agent type (`claude-code`, `codex`, `gemini`, or `opencode`) | Yes |
+| `spec.type` | Agent type (`claude-code`, `codex`, `gemini`, `opencode`, or `cursor`) | Yes |
 | `spec.prompt` | Task prompt for the agent | Yes |
 | `spec.credentials.type` | `api-key` or `oauth` | Yes |
 | `spec.credentials.secretRef.name` | Secret name with credentials | Yes |
@@ -135,7 +135,7 @@ GitHub Apps are preferred over PATs for production use because they offer fine-g
 | `spec.when.githubPullRequests.draft` | Filter by draft state | No |
 | `spec.when.githubPullRequests.priorityLabels` | Priority-order labels for task selection when `maxConcurrency` is set; index 0 is highest priority | No |
 | `spec.when.cron.schedule` | Cron schedule expression (e.g., `"0 * * * *"`) | Yes (when using cron) |
-| `spec.taskTemplate.type` | Agent type (`claude-code`, `codex`, `gemini`, or `opencode`) | Yes |
+| `spec.taskTemplate.type` | Agent type (`claude-code`, `codex`, `gemini`, `opencode`, or `cursor`) | Yes |
 | `spec.taskTemplate.credentials` | Credentials for the agent (same as Task) | Yes |
 | `spec.taskTemplate.model` | Model override | No |
 | `spec.taskTemplate.image` | Custom agent image override (see [Agent Image Interface](agent-image-interface.md)) | No |
@@ -270,7 +270,7 @@ The `token` and `githubApp` fields are mutually exclusive. If both `name` and `r
 
 | Field | Description |
 |-------|-------------|
-| `type` | Default agent type (`claude-code`, `codex`, `gemini`, or `opencode`) |
+| `type` | Default agent type (`claude-code`, `codex`, `gemini`, `opencode`, or `cursor`) |
 | `model` | Default model override |
 | `namespace` | Default Kubernetes namespace |
 | `agentConfig` | Default AgentConfig resource name |
