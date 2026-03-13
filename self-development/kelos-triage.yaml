@@ -12,6 +12,8 @@ spec:
         - needs-actor
       excludeLabels:
         - triage-accepted
+      reporting:
+        enabled: true
   maxConcurrency: 8
   taskTemplate:
     workspaceRef:

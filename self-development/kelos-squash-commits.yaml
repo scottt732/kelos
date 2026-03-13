@@ -9,6 +9,8 @@ spec:
       triggerComment: /kelos squash-commits
       excludeComments:
         - /kelos squash-commits-done
+      reporting:
+        enabled: true
   maxConcurrency: 1
   taskTemplate:
     workspaceRef:
