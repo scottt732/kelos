@@ -71,7 +71,7 @@ spec:
       - **cursor** — `cursor/Dockerfile` — installed via binary download (ARG `CURSOR_CLI_VERSION`)
 
       Task:
-      For each coding agent (except cursor, which does not use npm):
+      For each coding agent that uses npm (claude-code, codex, gemini, opencode):
       1. Read the Dockerfile to find the current pinned version (the `ARG` value)
       2. Check the latest version available on npm:
          ```
@@ -79,8 +79,18 @@ spec:
          ```
       3. Compare the current version with the latest version
 
-      For cursor:
-      - Skip version checking since it uses a binary download URL with an opaque version format
+      For cursor (binary download, not npm):
+      1. Read `cursor/Dockerfile` to find the current pinned version (the `CURSOR_CLI_VERSION` ARG value)
+      2. Discover the latest available version by parsing the official install script:
+         ```
+         curl -fsSL https://cursor.com/install | grep -oP '(?<=versions/)[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[a-f0-9]+'
+         ```
+      3. Compare the current version with the latest version
+      4. Before creating a PR, validate that the download binary actually exists:
+         ```
+         curl -sfI "https://downloads.cursor.com/lab/<latest-version>/linux/x64/agent-cli-package.tar.gz"
+         ```
+         Only proceed if an HTTP 200 response is returned. If the URL returns a non-200 status, skip cursor for this run.
 
       Then for each agent that has a newer version available:
       1. First check if an open PR already exists for updating that agent:
@@ -123,4 +133,5 @@ spec:
       - Do NOT create issues — only create PRs
       - If no agents need updating, exit cleanly without creating any PRs
       - Include the npm package changelog or release notes link in the PR body when available
+      - For cursor, include a link to https://cursor.com/changelog in the PR body instead
   pollInterval: 1m
