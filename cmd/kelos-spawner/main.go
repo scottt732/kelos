@@ -463,6 +463,48 @@ func reportingEnabled(ts *kelosv1alpha1.TaskSpawner) bool {
 	return false
 }
 
+type resolvedGitHubCommentPolicy struct {
+	TriggerComment    string
+	ExcludeComments   []string
+	AllowedUsers      []string
+	AllowedTeams      []string
+	MinimumPermission string
+}
+
+func githubTeamRefsToStrings(teams []kelosv1alpha1.GitHubTeamRef) []string {
+	if len(teams) == 0 {
+		return nil
+	}
+
+	out := make([]string, len(teams))
+	for i, team := range teams {
+		out[i] = string(team)
+	}
+	return out
+}
+
+func resolveGitHubCommentPolicy(policy *kelosv1alpha1.GitHubCommentPolicy, legacyTrigger string, legacyExclude []string) (resolvedGitHubCommentPolicy, error) {
+	legacyConfigured := strings.TrimSpace(legacyTrigger) != "" || len(legacyExclude) > 0
+	if policy != nil {
+		if legacyConfigured {
+			return resolvedGitHubCommentPolicy{}, fmt.Errorf("commentPolicy cannot be used with triggerComment or excludeComments")
+		}
+
+		return resolvedGitHubCommentPolicy{
+			TriggerComment:    policy.TriggerComment,
+			ExcludeComments:   append([]string(nil), policy.ExcludeComments...),
+			AllowedUsers:      append([]string(nil), policy.AllowedUsers...),
+			AllowedTeams:      githubTeamRefsToStrings(policy.AllowedTeams),
+			MinimumPermission: policy.MinimumPermission,
+		}, nil
+	}
+
+	return resolvedGitHubCommentPolicy{
+		TriggerComment:  legacyTrigger,
+		ExcludeComments: append([]string(nil), legacyExclude...),
+	}, nil
+}
+
 func buildSource(ts *kelosv1alpha1.TaskSpawner, owner, repo, apiBaseURL, tokenFile, jiraBaseURL, jiraProject, jiraJQL string, httpClient *http.Client) (source.Source, error) {
 	if ts.Spec.When.GitHubIssues != nil {
 		gh := ts.Spec.When.GitHubIssues
@@ -470,21 +512,28 @@ func buildSource(ts *kelosv1alpha1.TaskSpawner, owner, repo, apiBaseURL, tokenFi
 		if err != nil {
 			return nil, err
 		}
+		commentPolicy, err := resolveGitHubCommentPolicy(gh.CommentPolicy, gh.TriggerComment, gh.ExcludeComments)
+		if err != nil {
+			return nil, err
+		}
 		return &source.GitHubSource{
-			Owner:           owner,
-			Repo:            repo,
-			Types:           gh.Types,
-			Labels:          gh.Labels,
-			ExcludeLabels:   gh.ExcludeLabels,
-			State:           gh.State,
-			Assignee:        gh.Assignee,
-			Author:          gh.Author,
-			Token:           token,
-			BaseURL:         apiBaseURL,
-			Client:          httpClient,
-			TriggerComment:  gh.TriggerComment,
-			ExcludeComments: gh.ExcludeComments,
-			PriorityLabels:  gh.PriorityLabels,
+			Owner:             owner,
+			Repo:              repo,
+			Types:             gh.Types,
+			Labels:            gh.Labels,
+			ExcludeLabels:     gh.ExcludeLabels,
+			State:             gh.State,
+			Assignee:          gh.Assignee,
+			Author:            gh.Author,
+			Token:             token,
+			BaseURL:           apiBaseURL,
+			Client:            httpClient,
+			TriggerComment:    commentPolicy.TriggerComment,
+			ExcludeComments:   commentPolicy.ExcludeComments,
+			AllowedUsers:      commentPolicy.AllowedUsers,
+			AllowedTeams:      commentPolicy.AllowedTeams,
+			MinimumPermission: commentPolicy.MinimumPermission,
+			PriorityLabels:    gh.PriorityLabels,
 		}, nil
 	}
 
@@ -494,22 +543,29 @@ func buildSource(ts *kelosv1alpha1.TaskSpawner, owner, repo, apiBaseURL, tokenFi
 		if err != nil {
 			return nil, err
 		}
+		commentPolicy, err := resolveGitHubCommentPolicy(gh.CommentPolicy, gh.TriggerComment, gh.ExcludeComments)
+		if err != nil {
+			return nil, err
+		}
 
 		return &source.GitHubPullRequestSource{
-			Owner:           owner,
-			Repo:            repo,
-			Labels:          gh.Labels,
-			ExcludeLabels:   gh.ExcludeLabels,
-			State:           gh.State,
-			Author:          gh.Author,
-			Token:           token,
-			BaseURL:         apiBaseURL,
-			Client:          httpClient,
-			ReviewState:     gh.ReviewState,
-			TriggerComment:  gh.TriggerComment,
-			ExcludeComments: gh.ExcludeComments,
-			Draft:           gh.Draft,
-			PriorityLabels:  gh.PriorityLabels,
+			Owner:             owner,
+			Repo:              repo,
+			Labels:            gh.Labels,
+			ExcludeLabels:     gh.ExcludeLabels,
+			State:             gh.State,
+			Author:            gh.Author,
+			Token:             token,
+			BaseURL:           apiBaseURL,
+			Client:            httpClient,
+			ReviewState:       gh.ReviewState,
+			TriggerComment:    commentPolicy.TriggerComment,
+			ExcludeComments:   commentPolicy.ExcludeComments,
+			AllowedUsers:      commentPolicy.AllowedUsers,
+			AllowedTeams:      commentPolicy.AllowedTeams,
+			MinimumPermission: commentPolicy.MinimumPermission,
+			Draft:             gh.Draft,
+			PriorityLabels:    gh.PriorityLabels,
 		}, nil
 	}
 

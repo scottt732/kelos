@@ -1046,6 +1046,131 @@ func TestRunCycleWithSource_CommentFieldsPassedToSource(t *testing.T) {
 	}
 }
 
+func TestBuildSource_CommentPolicyPassedToIssueSource(t *testing.T) {
+	ts := newTaskSpawner("spawner", "default", nil)
+	ts.Spec.When.GitHubIssues = &kelosv1alpha1.GitHubIssues{
+		CommentPolicy: &kelosv1alpha1.GitHubCommentPolicy{
+			TriggerComment:    "/kelos pick-up",
+			ExcludeComments:   []string{"/kelos needs-input"},
+			AllowedUsers:      []string{"alice"},
+			AllowedTeams:      []kelosv1alpha1.GitHubTeamRef{"my-org/platform"},
+			MinimumPermission: "write",
+		},
+	}
+
+	src, err := buildSource(ts, "owner", "repo", "", "", "", "", "", nil)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	ghSrc, ok := src.(*source.GitHubSource)
+	if !ok {
+		t.Fatalf("Expected *source.GitHubSource, got %T", src)
+	}
+	if ghSrc.TriggerComment != "/kelos pick-up" {
+		t.Errorf("TriggerComment = %q, want %q", ghSrc.TriggerComment, "/kelos pick-up")
+	}
+	if len(ghSrc.ExcludeComments) != 1 || ghSrc.ExcludeComments[0] != "/kelos needs-input" {
+		t.Errorf("ExcludeComments = %v, want %v", ghSrc.ExcludeComments, []string{"/kelos needs-input"})
+	}
+	if len(ghSrc.AllowedUsers) != 1 || ghSrc.AllowedUsers[0] != "alice" {
+		t.Errorf("AllowedUsers = %v, want %v", ghSrc.AllowedUsers, []string{"alice"})
+	}
+	if len(ghSrc.AllowedTeams) != 1 || ghSrc.AllowedTeams[0] != "my-org/platform" {
+		t.Errorf("AllowedTeams = %v, want %v", ghSrc.AllowedTeams, []string{"my-org/platform"})
+	}
+	if ghSrc.MinimumPermission != "write" {
+		t.Errorf("MinimumPermission = %q, want %q", ghSrc.MinimumPermission, "write")
+	}
+}
+
+func TestBuildSource_CommentPolicyPassedToPullRequestSource(t *testing.T) {
+	ts := newTaskSpawner("spawner", "default", nil)
+	ts.Spec.When = kelosv1alpha1.When{
+		GitHubPullRequests: &kelosv1alpha1.GitHubPullRequests{
+			CommentPolicy: &kelosv1alpha1.GitHubCommentPolicy{
+				TriggerComment:    "/kelos pick-up",
+				ExcludeComments:   []string{"/kelos needs-input"},
+				AllowedUsers:      []string{"alice"},
+				AllowedTeams:      []kelosv1alpha1.GitHubTeamRef{"my-org/platform"},
+				MinimumPermission: "maintain",
+			},
+		},
+	}
+
+	src, err := buildSource(ts, "owner", "repo", "", "", "", "", "", nil)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	ghSrc, ok := src.(*source.GitHubPullRequestSource)
+	if !ok {
+		t.Fatalf("Expected *source.GitHubPullRequestSource, got %T", src)
+	}
+	if ghSrc.TriggerComment != "/kelos pick-up" {
+		t.Errorf("TriggerComment = %q, want %q", ghSrc.TriggerComment, "/kelos pick-up")
+	}
+	if len(ghSrc.ExcludeComments) != 1 || ghSrc.ExcludeComments[0] != "/kelos needs-input" {
+		t.Errorf("ExcludeComments = %v, want %v", ghSrc.ExcludeComments, []string{"/kelos needs-input"})
+	}
+	if len(ghSrc.AllowedUsers) != 1 || ghSrc.AllowedUsers[0] != "alice" {
+		t.Errorf("AllowedUsers = %v, want %v", ghSrc.AllowedUsers, []string{"alice"})
+	}
+	if len(ghSrc.AllowedTeams) != 1 || ghSrc.AllowedTeams[0] != "my-org/platform" {
+		t.Errorf("AllowedTeams = %v, want %v", ghSrc.AllowedTeams, []string{"my-org/platform"})
+	}
+	if ghSrc.MinimumPermission != "maintain" {
+		t.Errorf("MinimumPermission = %q, want %q", ghSrc.MinimumPermission, "maintain")
+	}
+}
+
+func TestBuildSource_CommentPolicyRejectsMixedConfig(t *testing.T) {
+	tests := []struct {
+		name string
+		ts   *kelosv1alpha1.TaskSpawner
+	}{
+		{
+			name: "issues",
+			ts: &kelosv1alpha1.TaskSpawner{
+				Spec: kelosv1alpha1.TaskSpawnerSpec{
+					When: kelosv1alpha1.When{
+						GitHubIssues: &kelosv1alpha1.GitHubIssues{
+							TriggerComment: "/kelos pick-up",
+							CommentPolicy: &kelosv1alpha1.GitHubCommentPolicy{
+								AllowedUsers: []string{"alice"},
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "pull requests",
+			ts: &kelosv1alpha1.TaskSpawner{
+				Spec: kelosv1alpha1.TaskSpawnerSpec{
+					When: kelosv1alpha1.When{
+						GitHubPullRequests: &kelosv1alpha1.GitHubPullRequests{
+							ExcludeComments: []string{"/kelos needs-input"},
+							CommentPolicy: &kelosv1alpha1.GitHubCommentPolicy{
+								AllowedUsers: []string{"alice"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := buildSource(tt.ts, "owner", "repo", "", "", "", "", "", nil)
+			if err == nil {
+				t.Fatal("Expected error for mixed legacy and commentPolicy config")
+			}
+		})
+	}
+}
+
 func newCompletedTask(name, namespace, spawnerName string, phase kelosv1alpha1.TaskPhase, completionTime time.Time) kelosv1alpha1.Task {
 	ct := metav1.NewTime(completionTime)
 	return kelosv1alpha1.Task{

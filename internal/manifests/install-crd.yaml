@@ -1146,12 +1146,58 @@ spec:
                           (server-side via GitHub API's "creator" parameter). When empty, no
                           author filtering is applied.
                         type: string
+                      commentPolicy:
+                        description: CommentPolicy configures comment-based workflow
+                          control and authorization.
+                        properties:
+                          allowedTeams:
+                            description: |-
+                              AllowedTeams restricts comment control to specific GitHub teams in
+                              org/team-slug format.
+                            items:
+                              description: GitHubTeamRef identifies a GitHub team
+                                in org/team-slug format.
+                              pattern: ^[^/]+/[^/]+$
+                              type: string
+                            type: array
+                          allowedUsers:
+                            description: AllowedUsers restricts comment control to
+                              specific GitHub usernames.
+                            items:
+                              type: string
+                            type: array
+                          excludeComments:
+                            description: |-
+                              ExcludeComments blocks items whose most recent matching command is an
+                              exclude command. When combined with TriggerComment, the most recent
+                              matching command wins.
+                            items:
+                              type: string
+                            type: array
+                          minimumPermission:
+                            description: |-
+                              MinimumPermission restricts comment control to users with at least the
+                              given repository permission.
+                            enum:
+                            - read
+                            - triage
+                            - write
+                            - maintain
+                            - admin
+                            type: string
+                          triggerComment:
+                            description: |-
+                              TriggerComment requires a matching command for the item to be included.
+                              When set alone, only items with a matching command are discovered.
+                            type: string
+                        type: object
                       excludeComments:
                         description: |-
                           ExcludeComments enables comment-based exclusion. When set, issues
                           whose most recent matching comment is an ExcludeComment are excluded.
                           When combined with TriggerComment, the most recent matching command
                           wins — a TriggerComment after an ExcludeComment re-enables the issue.
+                          Deprecated: use CommentPolicy.ExcludeComments instead.
                         items:
                           type: string
                         type: array
@@ -1208,6 +1254,7 @@ spec:
                           included. When set alone, only issues with a matching comment are
                           discovered. When set together with ExcludeComments, the most recent
                           matching command wins (scanned in reverse chronological order).
+                          Deprecated: use CommentPolicy.TriggerComment instead.
                         type: string
                       types:
                         default:
@@ -1218,6 +1265,12 @@ spec:
                           type: string
                         type: array
                     type: object
+                    x-kubernetes-validations:
+                    - message: commentPolicy cannot be used with triggerComment or
+                        excludeComments
+                      rule: '!(has(self.commentPolicy) && ((has(self.triggerComment)
+                        && size(self.triggerComment) > 0) || (has(self.excludeComments)
+                        && size(self.excludeComments) > 0)))'
                   githubPullRequests:
                     description: GitHubPullRequests discovers pull requests from a
                       GitHub repository.
@@ -1227,6 +1280,51 @@ spec:
                           Author filters pull requests by the username of the user who opened them.
                           When empty, no author filtering is applied.
                         type: string
+                      commentPolicy:
+                        description: CommentPolicy configures comment-based workflow
+                          control and authorization.
+                        properties:
+                          allowedTeams:
+                            description: |-
+                              AllowedTeams restricts comment control to specific GitHub teams in
+                              org/team-slug format.
+                            items:
+                              description: GitHubTeamRef identifies a GitHub team
+                                in org/team-slug format.
+                              pattern: ^[^/]+/[^/]+$
+                              type: string
+                            type: array
+                          allowedUsers:
+                            description: AllowedUsers restricts comment control to
+                              specific GitHub usernames.
+                            items:
+                              type: string
+                            type: array
+                          excludeComments:
+                            description: |-
+                              ExcludeComments blocks items whose most recent matching command is an
+                              exclude command. When combined with TriggerComment, the most recent
+                              matching command wins.
+                            items:
+                              type: string
+                            type: array
+                          minimumPermission:
+                            description: |-
+                              MinimumPermission restricts comment control to users with at least the
+                              given repository permission.
+                            enum:
+                            - read
+                            - triage
+                            - write
+                            - maintain
+                            - admin
+                            type: string
+                          triggerComment:
+                            description: |-
+                              TriggerComment requires a matching command for the item to be included.
+                              When set alone, only items with a matching command are discovered.
+                            type: string
+                        type: object
                       draft:
                         description: |-
                           Draft filters pull requests by draft state. When unset, both draft and
@@ -1238,6 +1336,7 @@ spec:
                           whose most recent matching comment is an ExcludeComment are excluded.
                           When combined with TriggerComment, the most recent matching command
                           wins — a TriggerComment after an ExcludeComment re-enables the PR.
+                          Deprecated: use CommentPolicy.ExcludeComments instead.
                         items:
                           type: string
                         type: array
@@ -1306,8 +1405,15 @@ spec:
                           included. When set alone, only PRs with a matching comment are
                           discovered. When set together with ExcludeComments, the most recent
                           matching command wins based on comment timestamps.
+                          Deprecated: use CommentPolicy.TriggerComment instead.
                         type: string
                     type: object
+                    x-kubernetes-validations:
+                    - message: commentPolicy cannot be used with triggerComment or
+                        excludeComments
+                      rule: '!(has(self.commentPolicy) && ((has(self.triggerComment)
+                        && size(self.triggerComment) > 0) || (has(self.excludeComments)
+                        && size(self.excludeComments) > 0)))'
                   jira:
                     description: Jira discovers issues from a Jira project.
                     properties:

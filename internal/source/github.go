@@ -26,20 +26,23 @@ const (
 
 // GitHubSource discovers issues from a GitHub repository.
 type GitHubSource struct {
-	Owner           string
-	Repo            string
-	Types           []string
-	Labels          []string
-	ExcludeLabels   []string
-	State           string
-	Assignee        string
-	Author          string
-	Token           string
-	BaseURL         string
-	Client          *http.Client
-	TriggerComment  string
-	ExcludeComments []string
-	PriorityLabels  []string
+	Owner             string
+	Repo              string
+	Types             []string
+	Labels            []string
+	ExcludeLabels     []string
+	State             string
+	Assignee          string
+	Author            string
+	Token             string
+	BaseURL           string
+	Client            *http.Client
+	TriggerComment    string
+	ExcludeComments   []string
+	AllowedUsers      []string
+	AllowedTeams      []string
+	MinimumPermission string
+	PriorityLabels    []string
 }
 
 type githubIssue struct {
@@ -48,6 +51,7 @@ type githubIssue struct {
 	Body        string        `json:"body"`
 	HTMLURL     string        `json:"html_url"`
 	Labels      []githubLabel `json:"labels"`
+	User        githubUser    `json:"user"`
 	PullRequest *struct{}     `json:"pull_request,omitempty"`
 }
 
@@ -56,8 +60,9 @@ type githubLabel struct {
 }
 
 type githubComment struct {
-	Body      string `json:"body"`
-	CreatedAt string `json:"created_at"`
+	Body      string     `json:"body"`
+	CreatedAt string     `json:"created_at"`
+	User      githubUser `json:"user"`
 }
 
 func (s *GitHubSource) baseURL() string {
@@ -83,7 +88,21 @@ func (s *GitHubSource) Discover(ctx context.Context) ([]WorkItem, error) {
 
 	issues = s.filterItems(issues)
 
+	policy := githubCommentPolicy{
+		TriggerComment:    s.TriggerComment,
+		ExcludeComments:   s.ExcludeComments,
+		AllowedUsers:      s.AllowedUsers,
+		AllowedTeams:      s.AllowedTeams,
+		MinimumPermission: s.MinimumPermission,
+	}
 	needsCommentFilter := s.TriggerComment != "" || len(s.ExcludeComments) > 0
+	var authorizer *githubCommentAuthorizer
+	if needsCommentFilter {
+		authorizer, err = newGitHubCommentAuthorizer(s.Owner, s.Repo, s.baseURL(), s.Token, s.httpClient(), policy)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	var items []WorkItem
 	for _, issue := range issues {
@@ -99,8 +118,16 @@ func (s *GitHubSource) Discover(ctx context.Context) ([]WorkItem, error) {
 
 		comments := concatCommentBodies(rawComments)
 
-		if needsCommentFilter && !s.passesCommentFilter(issue.Body, comments) {
-			continue
+		var triggerTime time.Time
+		if needsCommentFilter {
+			commentAllowed, resolvedTriggerTime, err := evaluateGitHubCommentPolicy(ctx, issue.Body, issue.User, rawComments, policy, authorizer)
+			if err != nil {
+				return nil, fmt.Errorf("evaluating comment policy for issue #%d: %w", issue.Number, err)
+			}
+			if !commentAllowed {
+				continue
+			}
+			triggerTime = resolvedTriggerTime
 		}
 
 		kind := "Issue"
@@ -122,86 +149,13 @@ func (s *GitHubSource) Discover(ctx context.Context) ([]WorkItem, error) {
 		// Record the timestamp of the most recent trigger comment so the
 		// spawner can retrigger completed tasks when a new trigger arrives.
 		if s.TriggerComment != "" {
-			item.TriggerTime = latestTriggerTime(rawComments, s.TriggerComment)
+			item.TriggerTime = triggerTime
 		}
 
 		items = append(items, item)
 	}
 
 	return items, nil
-}
-
-// latestTriggerTime returns the CreatedAt timestamp of the most recent
-// comment whose body contains the trigger command, or the zero time if
-// none match.
-func latestTriggerTime(comments []githubComment, trigger string) time.Time {
-	var latest time.Time
-	for _, c := range comments {
-		if containsCommand(c.Body, trigger) {
-			t, err := time.Parse(time.RFC3339, c.CreatedAt)
-			if err != nil {
-				continue
-			}
-			if t.After(latest) {
-				latest = t
-			}
-		}
-	}
-	return latest
-}
-
-// passesCommentFilter checks whether an issue's body and comments satisfy
-// the comment-based trigger and exclude rules. The issue body is checked
-// first (as the earliest entry), followed by comments in chronological order.
-//
-// If TriggerComment is configured, a matching command in the body or any
-// comment is required. When combined with ExcludeComments, the most recent
-// matching command wins (scanned in reverse chronological order).
-func (s *GitHubSource) passesCommentFilter(body, comments string) bool {
-	// Build parts list: body first, then comments.
-	var parts []string
-	if body != "" {
-		parts = append(parts, body)
-	}
-	if comments != "" {
-		parts = append(parts, strings.Split(comments, "\n---\n")...)
-	}
-
-	// When only TriggerComment is set, require at least one matching comment.
-	if s.TriggerComment != "" && len(s.ExcludeComments) == 0 {
-		for _, p := range parts {
-			if containsCommand(p, s.TriggerComment) {
-				return true
-			}
-		}
-		return false
-	}
-
-	// When only ExcludeComments is set, exclude if any comment matches.
-	if len(s.ExcludeComments) > 0 && s.TriggerComment == "" {
-		for i := len(parts) - 1; i >= 0; i-- {
-			if containsAnyCommand(parts[i], s.ExcludeComments) {
-				return false
-			}
-		}
-		return true
-	}
-
-	// When both are set, scan in reverse; the most recent matching command wins.
-	if s.TriggerComment != "" && len(s.ExcludeComments) > 0 {
-		for i := len(parts) - 1; i >= 0; i-- {
-			if containsAnyCommand(parts[i], s.ExcludeComments) {
-				return false
-			}
-			if containsCommand(parts[i], s.TriggerComment) {
-				return true
-			}
-		}
-		// Neither command found — trigger is required but absent.
-		return false
-	}
-
-	return true
 }
 
 // containsAnyCommand reports whether body contains any of the given commands.
@@ -401,9 +355,9 @@ func (s *GitHubSource) fetchCommentsPage(ctx context.Context, pageURL string) ([
 }
 
 // concatCommentBodies joins comment bodies into a single string separated by
-// "\n---\n", matching the format expected by passesCommentFilter. When the
-// total size exceeds maxCommentBytes, older comments are dropped from the
-// front so that the most recent (and most relevant) comments are preserved.
+// "\n---\n". When the total size exceeds maxCommentBytes, older comments are
+// dropped from the front so that the most recent (and most relevant) comments
+// are preserved.
 func concatCommentBodies(comments []githubComment) string {
 	totalBytes := 0
 	for _, c := range comments {

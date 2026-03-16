@@ -52,12 +52,48 @@ type GitHubReporting struct {
 	Enabled bool `json:"enabled,omitempty"`
 }
 
+// GitHubTeamRef identifies a GitHub team in org/team-slug format.
+// +kubebuilder:validation:Pattern=`^[^/]+/[^/]+$`
+type GitHubTeamRef string
+
+// GitHubCommentPolicy configures comment-based workflow control on GitHub items.
+// A matching command is honored if the actor matches any configured user,
+// team, or minimum permission rule.
+type GitHubCommentPolicy struct {
+	// TriggerComment requires a matching command for the item to be included.
+	// When set alone, only items with a matching command are discovered.
+	// +optional
+	TriggerComment string `json:"triggerComment,omitempty"`
+
+	// ExcludeComments blocks items whose most recent matching command is an
+	// exclude command. When combined with TriggerComment, the most recent
+	// matching command wins.
+	// +optional
+	ExcludeComments []string `json:"excludeComments,omitempty"`
+
+	// AllowedUsers restricts comment control to specific GitHub usernames.
+	// +optional
+	AllowedUsers []string `json:"allowedUsers,omitempty"`
+
+	// AllowedTeams restricts comment control to specific GitHub teams in
+	// org/team-slug format.
+	// +optional
+	AllowedTeams []GitHubTeamRef `json:"allowedTeams,omitempty"`
+
+	// MinimumPermission restricts comment control to users with at least the
+	// given repository permission.
+	// +kubebuilder:validation:Enum=read;triage;write;maintain;admin
+	// +optional
+	MinimumPermission string `json:"minimumPermission,omitempty"`
+}
+
 // GitHubIssues discovers issues from a GitHub repository.
 // By default the repository owner and name are derived from the workspace's
 // repo URL specified in taskTemplate.workspaceRef. Set the Repo field to
 // override this — useful for fork workflows where the workspace points to a
 // fork but issues should be discovered from the upstream repository.
 // If the workspace has a secretRef, it is used for GitHub API authentication.
+// +kubebuilder:validation:XValidation:rule="!(has(self.commentPolicy) && ((has(self.triggerComment) && size(self.triggerComment) > 0) || (has(self.excludeComments) && size(self.excludeComments) > 0)))",message="commentPolicy cannot be used with triggerComment or excludeComments"
 type GitHubIssues struct {
 	// Repo optionally overrides the repository to poll for issues, in
 	// "owner/repo" format or as a full URL. When empty, the repository
@@ -87,10 +123,15 @@ type GitHubIssues struct {
 	// +optional
 	State string `json:"state,omitempty"`
 
+	// CommentPolicy configures comment-based workflow control and authorization.
+	// +optional
+	CommentPolicy *GitHubCommentPolicy `json:"commentPolicy,omitempty"`
+
 	// TriggerComment requires a matching comment for the issue to be
 	// included. When set alone, only issues with a matching comment are
 	// discovered. When set together with ExcludeComments, the most recent
 	// matching command wins (scanned in reverse chronological order).
+	// Deprecated: use CommentPolicy.TriggerComment instead.
 	// +optional
 	TriggerComment string `json:"triggerComment,omitempty"`
 
@@ -98,6 +139,7 @@ type GitHubIssues struct {
 	// whose most recent matching comment is an ExcludeComment are excluded.
 	// When combined with TriggerComment, the most recent matching command
 	// wins — a TriggerComment after an ExcludeComment re-enables the issue.
+	// Deprecated: use CommentPolicy.ExcludeComments instead.
 	// +optional
 	ExcludeComments []string `json:"excludeComments,omitempty"`
 
@@ -132,6 +174,7 @@ type GitHubIssues struct {
 // override this — useful for fork workflows where the workspace points to a
 // fork but pull requests should be discovered from the upstream repository.
 // If the workspace has a secretRef, it is used for GitHub API authentication.
+// +kubebuilder:validation:XValidation:rule="!(has(self.commentPolicy) && ((has(self.triggerComment) && size(self.triggerComment) > 0) || (has(self.excludeComments) && size(self.excludeComments) > 0)))",message="commentPolicy cannot be used with triggerComment or excludeComments"
 type GitHubPullRequests struct {
 	// Repo optionally overrides the repository to poll for pull requests, in
 	// "owner/repo" format or as a full URL. When empty, the repository
@@ -164,10 +207,15 @@ type GitHubPullRequests struct {
 	// +optional
 	ReviewState string `json:"reviewState,omitempty"`
 
+	// CommentPolicy configures comment-based workflow control and authorization.
+	// +optional
+	CommentPolicy *GitHubCommentPolicy `json:"commentPolicy,omitempty"`
+
 	// TriggerComment requires a matching comment for the pull request to be
 	// included. When set alone, only PRs with a matching comment are
 	// discovered. When set together with ExcludeComments, the most recent
 	// matching command wins based on comment timestamps.
+	// Deprecated: use CommentPolicy.TriggerComment instead.
 	// +optional
 	TriggerComment string `json:"triggerComment,omitempty"`
 
@@ -175,6 +223,7 @@ type GitHubPullRequests struct {
 	// whose most recent matching comment is an ExcludeComment are excluded.
 	// When combined with TriggerComment, the most recent matching command
 	// wins — a TriggerComment after an ExcludeComment re-enables the PR.
+	// Deprecated: use CommentPolicy.ExcludeComments instead.
 	// +optional
 	ExcludeComments []string `json:"excludeComments,omitempty"`
 

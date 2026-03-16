@@ -20,20 +20,23 @@ const (
 
 // GitHubPullRequestSource discovers pull requests from a GitHub repository.
 type GitHubPullRequestSource struct {
-	Owner           string
-	Repo            string
-	Labels          []string
-	ExcludeLabels   []string
-	State           string
-	Author          string
-	Token           string
-	BaseURL         string
-	Client          *http.Client
-	ReviewState     string
-	TriggerComment  string
-	ExcludeComments []string
-	Draft           *bool
-	PriorityLabels  []string
+	Owner             string
+	Repo              string
+	Labels            []string
+	ExcludeLabels     []string
+	State             string
+	Author            string
+	Token             string
+	BaseURL           string
+	Client            *http.Client
+	ReviewState       string
+	TriggerComment    string
+	ExcludeComments   []string
+	AllowedUsers      []string
+	AllowedTeams      []string
+	MinimumPermission string
+	Draft             *bool
+	PriorityLabels    []string
 }
 
 type githubUser struct {
@@ -65,11 +68,12 @@ type githubPullRequestReview struct {
 }
 
 type githubPullRequestComment struct {
-	Body      string `json:"body"`
-	Path      string `json:"path"`
-	Line      int    `json:"line"`
-	CreatedAt string `json:"created_at"`
-	CommitID  string `json:"commit_id"`
+	Body      string     `json:"body"`
+	Path      string     `json:"path"`
+	Line      int        `json:"line"`
+	CreatedAt string     `json:"created_at"`
+	CommitID  string     `json:"commit_id"`
+	User      githubUser `json:"user"`
 }
 
 func (s *GitHubPullRequestSource) Discover(ctx context.Context) ([]WorkItem, error) {
@@ -79,6 +83,22 @@ func (s *GitHubPullRequestSource) Discover(ctx context.Context) ([]WorkItem, err
 	}
 
 	pullRequests = s.filterPullRequests(pullRequests)
+
+	policy := githubCommentPolicy{
+		TriggerComment:    s.TriggerComment,
+		ExcludeComments:   s.ExcludeComments,
+		AllowedUsers:      s.AllowedUsers,
+		AllowedTeams:      s.AllowedTeams,
+		MinimumPermission: s.MinimumPermission,
+	}
+	needsCommentFilter := s.TriggerComment != "" || len(s.ExcludeComments) > 0
+	var authorizer *githubCommentAuthorizer
+	if needsCommentFilter {
+		authorizer, err = newGitHubCommentAuthorizer(s.Owner, s.Repo, s.baseURL(), s.Token, s.httpClient(), policy)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	issueSource := &GitHubSource{
 		Owner:   s.Owner,
@@ -112,9 +132,16 @@ func (s *GitHubPullRequestSource) Discover(ctx context.Context) ([]WorkItem, err
 
 		allComments := mergeComments(conversationComments, reviewComments)
 		allComments = appendReviewBodies(allComments, reviews)
-		commentAllowed, commentTriggerTime := s.passesCommentFilter(pr.Body, allComments)
-		if !commentAllowed {
-			continue
+		commentTriggerTime := time.Time{}
+		if needsCommentFilter {
+			commentAllowed, resolvedTriggerTime, err := evaluateGitHubCommentPolicy(ctx, pr.Body, pr.User, allComments, policy, authorizer)
+			if err != nil {
+				return nil, fmt.Errorf("evaluating comment policy for pull request #%d: %w", pr.Number, err)
+			}
+			if !commentAllowed {
+				continue
+			}
+			commentTriggerTime = resolvedTriggerTime
 		}
 
 		reviewComments = filterPullRequestCommentsForCommit(reviewComments, pr.Head.SHA)
@@ -333,58 +360,6 @@ func (s *GitHubPullRequestSource) httpClient() *http.Client {
 	return http.DefaultClient
 }
 
-func (s *GitHubPullRequestSource) passesCommentFilter(body string, comments []githubComment) (bool, time.Time) {
-	bodyMatchesTrigger := s.TriggerComment != "" && containsCommand(body, s.TriggerComment)
-	bodyMatchesExclude := len(s.ExcludeComments) > 0 && containsAnyCommand(body, s.ExcludeComments)
-
-	var triggerTime time.Time
-	if s.TriggerComment != "" {
-		triggerTime = latestMatchingCommentTime(comments, []string{s.TriggerComment})
-	}
-	var excludeTime time.Time
-	if len(s.ExcludeComments) > 0 {
-		excludeTime = latestMatchingCommentTime(comments, s.ExcludeComments)
-	}
-
-	// When only TriggerComment is set, require a match in body or comments.
-	if s.TriggerComment != "" && len(s.ExcludeComments) == 0 {
-		if !triggerTime.IsZero() {
-			return true, triggerTime
-		}
-		return bodyMatchesTrigger, time.Time{}
-	}
-
-	// When only ExcludeComments is set, exclude if any comment or body matches.
-	if len(s.ExcludeComments) > 0 && s.TriggerComment == "" {
-		if !excludeTime.IsZero() || bodyMatchesExclude {
-			return false, time.Time{}
-		}
-		return true, time.Time{}
-	}
-
-	// When both are set, the most recent matching command wins.
-	if s.TriggerComment != "" && len(s.ExcludeComments) > 0 {
-		if triggerTime.After(excludeTime) {
-			return true, triggerTime
-		}
-		if !excludeTime.IsZero() {
-			return false, time.Time{}
-		}
-		// No comments matched — fall back to body. Check exclude first
-		// so that exclude wins when both appear in the same body, matching
-		// the issue source behavior.
-		if bodyMatchesExclude {
-			return false, time.Time{}
-		}
-		if bodyMatchesTrigger {
-			return true, time.Time{}
-		}
-		return false, time.Time{}
-	}
-
-	return true, time.Time{}
-}
-
 func aggregatePullRequestReviewState(reviews []githubPullRequestReview, headSHA string) (string, time.Time) {
 	type reviewerState struct {
 		State       string
@@ -452,24 +427,6 @@ func normalizePullRequestReviewState(state string) string {
 	}
 }
 
-func latestMatchingCommentTime(comments []githubComment, cmds []string) time.Time {
-	var latest time.Time
-	for _, comment := range comments {
-		if !containsAnyCommand(comment.Body, cmds) {
-			continue
-		}
-
-		createdAt, err := time.Parse(time.RFC3339, comment.CreatedAt)
-		if err != nil {
-			continue
-		}
-		if createdAt.After(latest) {
-			latest = createdAt
-		}
-	}
-	return latest
-}
-
 func (s *GitHubPullRequestSource) resolveTriggerTime(reviewTriggerTime, commentTriggerTime time.Time) time.Time {
 	triggerTime := commentTriggerTime
 	if s.resolvedReviewState() != reviewStateAny && reviewTriggerTime.After(triggerTime) {
@@ -490,6 +447,7 @@ func appendReviewBodies(comments []githubComment, reviews []githubPullRequestRev
 		comments = append(comments, githubComment{
 			Body:      body,
 			CreatedAt: r.SubmittedAt,
+			User:      r.User,
 		})
 	}
 	return comments
@@ -504,6 +462,7 @@ func mergeComments(conversation []githubComment, review []githubPullRequestComme
 		merged = append(merged, githubComment{
 			Body:      rc.Body,
 			CreatedAt: rc.CreatedAt,
+			User:      rc.User,
 		})
 	}
 	return merged

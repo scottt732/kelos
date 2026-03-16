@@ -881,139 +881,6 @@ func TestDiscoverTriggerAndExcludeComment(t *testing.T) {
 	}
 }
 
-func TestPassesCommentFilter(t *testing.T) {
-	tests := []struct {
-		name            string
-		triggerComment  string
-		excludeComments []string
-		body            string
-		comments        string
-		want            bool
-	}{
-		{
-			name:     "no filters configured",
-			comments: "some comment",
-			want:     true,
-		},
-		{
-			name:           "trigger present",
-			triggerComment: "/kelos pick-up",
-			comments:       "/kelos pick-up",
-			want:           true,
-		},
-		{
-			name:           "trigger absent",
-			triggerComment: "/kelos pick-up",
-			comments:       "no trigger here",
-			want:           false,
-		},
-		{
-			name:           "trigger empty comments",
-			triggerComment: "/kelos pick-up",
-			comments:       "",
-			want:           false,
-		},
-		{
-			name:           "trigger in body",
-			triggerComment: "/kelos pick-up",
-			body:           "/kelos pick-up",
-			want:           true,
-		},
-		{
-			name:            "exclude present",
-			excludeComments: []string{"/kelos needs-input"},
-			comments:        "/kelos needs-input",
-			want:            false,
-		},
-		{
-			name:            "exclude absent",
-			excludeComments: []string{"/kelos needs-input"},
-			comments:        "normal comment",
-			want:            true,
-		},
-		{
-			name:            "trigger as resume after exclude",
-			triggerComment:  "/kelos pick-up",
-			excludeComments: []string{"/kelos needs-input"},
-			comments:        "/kelos pick-up\n---\n/kelos needs-input\n---\n/kelos pick-up",
-			want:            true,
-		},
-		{
-			name:            "exclude after trigger",
-			triggerComment:  "/kelos pick-up",
-			excludeComments: []string{"/kelos needs-input"},
-			comments:        "/kelos pick-up\n---\n/kelos needs-input",
-			want:            false,
-		},
-		{
-			name:            "both set but neither found rejects issue",
-			triggerComment:  "/kelos pick-up",
-			excludeComments: []string{"/kelos needs-input"},
-			comments:        "normal comment",
-			want:            false,
-		},
-		{
-			name:            "command must be on its own line",
-			excludeComments: []string{"/kelos needs-input"},
-			comments:        "please do /kelos needs-input for me",
-			want:            true,
-		},
-		{
-			name:            "multiple exclude comments",
-			excludeComments: []string{"/kelos needs-input", "/kelos pause"},
-			comments:        "/kelos pause",
-			want:            false,
-		},
-		{
-			name:            "multiple exclude comments none match",
-			excludeComments: []string{"/kelos needs-input", "/kelos pause"},
-			comments:        "normal comment",
-			want:            true,
-		},
-		{
-			name:            "multiple exclude with trigger resume",
-			triggerComment:  "/kelos pick-up",
-			excludeComments: []string{"/kelos needs-input", "/kelos pause"},
-			comments:        "/kelos pick-up\n---\n/kelos pause\n---\n/kelos pick-up",
-			want:            true,
-		},
-		{
-			name:            "multiple exclude second matches most recent",
-			triggerComment:  "/kelos pick-up",
-			excludeComments: []string{"/kelos needs-input", "/kelos pause"},
-			comments:        "/kelos pick-up\n---\n/kelos pause",
-			want:            false,
-		},
-		{
-			name:            "body with both trigger and exclude rejects issue",
-			triggerComment:  "/kelos pick-up",
-			excludeComments: []string{"/kelos needs-input"},
-			body:            "/kelos pick-up\n/kelos needs-input",
-			want:            false,
-		},
-		{
-			name:            "exclude in body blocks even with no comments",
-			triggerComment:  "/kelos pick-up",
-			excludeComments: []string{"/kelos needs-input"},
-			body:            "/kelos needs-input",
-			want:            false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			s := &GitHubSource{
-				TriggerComment:  tt.triggerComment,
-				ExcludeComments: tt.excludeComments,
-			}
-			got := s.passesCommentFilter(tt.body, tt.comments)
-			if got != tt.want {
-				t.Errorf("passesCommentFilter() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestContainsCommand(t *testing.T) {
 	tests := []struct {
 		name string
@@ -1034,78 +901,6 @@ func TestContainsCommand(t *testing.T) {
 			got := containsCommand(tt.body, tt.cmd)
 			if got != tt.want {
 				t.Errorf("containsCommand(%q, %q) = %v, want %v", tt.body, tt.cmd, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestLatestTriggerTime(t *testing.T) {
-	t1 := "2026-01-01T12:00:00Z"
-	t2 := "2026-01-02T12:00:00Z"
-	t3 := "2026-01-03T12:00:00Z"
-
-	tests := []struct {
-		name     string
-		comments []githubComment
-		trigger  string
-		want     string // expected RFC3339 time or "" for zero
-	}{
-		{
-			name:     "no comments",
-			comments: nil,
-			trigger:  "/kelos pick-up",
-			want:     "",
-		},
-		{
-			name: "single matching comment",
-			comments: []githubComment{
-				{Body: "/kelos pick-up", CreatedAt: t1},
-			},
-			trigger: "/kelos pick-up",
-			want:    t1,
-		},
-		{
-			name: "multiple matching comments returns latest",
-			comments: []githubComment{
-				{Body: "/kelos pick-up", CreatedAt: t1},
-				{Body: "regular comment", CreatedAt: t2},
-				{Body: "/kelos pick-up", CreatedAt: t3},
-			},
-			trigger: "/kelos pick-up",
-			want:    t3,
-		},
-		{
-			name: "no matching comments",
-			comments: []githubComment{
-				{Body: "regular comment", CreatedAt: t1},
-				{Body: "another comment", CreatedAt: t2},
-			},
-			trigger: "/kelos pick-up",
-			want:    "",
-		},
-		{
-			name: "invalid timestamp skipped",
-			comments: []githubComment{
-				{Body: "/kelos pick-up", CreatedAt: "not-a-timestamp"},
-				{Body: "/kelos pick-up", CreatedAt: t2},
-			},
-			trigger: "/kelos pick-up",
-			want:    t2,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := latestTriggerTime(tt.comments, tt.trigger)
-			if tt.want == "" {
-				if !got.IsZero() {
-					t.Errorf("latestTriggerTime() = %v, want zero time", got)
-				}
-				return
-			}
-			expected, _ := time.Parse(time.RFC3339, tt.want)
-			if !got.Equal(expected) {
-				t.Errorf("latestTriggerTime() = %v, want %v", got, expected)
 			}
 		})
 	}
@@ -1156,8 +951,8 @@ func TestDiscoverSetsTriggerTime(t *testing.T) {
 func TestDiscoverTriggerTimeSurvivesByteLimit(t *testing.T) {
 	// An early trigger comment passes the comment filter, then a large
 	// comment pushes us past maxCommentBytes. A second (newer) trigger
-	// comment posted after the big comment must still be found by
-	// latestTriggerTime even though concatCommentBodies truncates it.
+	// comment posted after the big comment must still be discovered even
+	// though concatCommentBodies truncates it.
 	earlyTS := "2026-01-10T10:00:00Z"
 	latestTS := "2026-01-20T10:00:00Z"
 
