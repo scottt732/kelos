@@ -52,7 +52,13 @@ type GitHubReporting struct {
 	Enabled bool `json:"enabled,omitempty"`
 }
 
+// GitHubTeamRef identifies a GitHub team in org/team-slug format.
+// +kubebuilder:validation:Pattern=`^[^/]+/[^/]+$`
+type GitHubTeamRef string
+
 // GitHubCommentPolicy configures comment-based workflow control on GitHub items.
+// A matching command is honored if the actor matches any configured user,
+// team, or minimum permission rule.
 type GitHubCommentPolicy struct {
 	// TriggerComment requires a matching command for the item to be included.
 	// When set alone, only items with a matching command are discovered.
@@ -66,16 +72,13 @@ type GitHubCommentPolicy struct {
 	ExcludeComments []string `json:"excludeComments,omitempty"`
 
 	// AllowedUsers restricts comment control to specific GitHub usernames.
-	// A matching command is honored if the actor matches any configured user,
-	// team, or minimum permission rule.
 	// +optional
 	AllowedUsers []string `json:"allowedUsers,omitempty"`
 
 	// AllowedTeams restricts comment control to specific GitHub teams in
 	// org/team-slug format.
-	// +kubebuilder:validation:Items:Pattern=`^[^/]+/[^/]+$`
 	// +optional
-	AllowedTeams []string `json:"allowedTeams,omitempty"`
+	AllowedTeams []GitHubTeamRef `json:"allowedTeams,omitempty"`
 
 	// MinimumPermission restricts comment control to users with at least the
 	// given repository permission.

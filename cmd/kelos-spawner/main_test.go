@@ -1053,7 +1053,7 @@ func TestBuildSource_CommentPolicyPassedToIssueSource(t *testing.T) {
 			TriggerComment:    "/kelos pick-up",
 			ExcludeComments:   []string{"/kelos needs-input"},
 			AllowedUsers:      []string{"alice"},
-			AllowedTeams:      []string{"my-org/platform"},
+			AllowedTeams:      []kelosv1alpha1.GitHubTeamRef{"my-org/platform"},
 			MinimumPermission: "write",
 		},
 	}
@@ -1092,7 +1092,7 @@ func TestBuildSource_CommentPolicyPassedToPullRequestSource(t *testing.T) {
 				TriggerComment:    "/kelos pick-up",
 				ExcludeComments:   []string{"/kelos needs-input"},
 				AllowedUsers:      []string{"alice"},
-				AllowedTeams:      []string{"my-org/platform"},
+				AllowedTeams:      []kelosv1alpha1.GitHubTeamRef{"my-org/platform"},
 				MinimumPermission: "maintain",
 			},
 		},

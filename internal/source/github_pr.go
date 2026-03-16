@@ -360,27 +360,6 @@ func (s *GitHubPullRequestSource) httpClient() *http.Client {
 	return http.DefaultClient
 }
 
-func (s *GitHubPullRequestSource) passesCommentFilter(body string, comments []githubComment) (bool, time.Time) {
-	allowed, triggerTime, err := evaluateGitHubCommentPolicy(
-		context.Background(),
-		body,
-		githubUser{},
-		comments,
-		githubCommentPolicy{
-			TriggerComment:    s.TriggerComment,
-			ExcludeComments:   s.ExcludeComments,
-			AllowedUsers:      s.AllowedUsers,
-			AllowedTeams:      s.AllowedTeams,
-			MinimumPermission: s.MinimumPermission,
-		},
-		nil,
-	)
-	if err != nil {
-		return false, time.Time{}
-	}
-	return allowed, triggerTime
-}
-
 func aggregatePullRequestReviewState(reviews []githubPullRequestReview, headSHA string) (string, time.Time) {
 	type reviewerState struct {
 		State       string
@@ -446,24 +425,6 @@ func normalizePullRequestReviewState(state string) string {
 	default:
 		return ""
 	}
-}
-
-func latestMatchingCommentTime(comments []githubComment, cmds []string) time.Time {
-	var latest time.Time
-	for _, comment := range comments {
-		if !containsAnyCommand(comment.Body, cmds) {
-			continue
-		}
-
-		createdAt, err := time.Parse(time.RFC3339, comment.CreatedAt)
-		if err != nil {
-			continue
-		}
-		if createdAt.After(latest) {
-			latest = createdAt
-		}
-	}
-	return latest
 }
 
 func (s *GitHubPullRequestSource) resolveTriggerTime(reviewTriggerTime, commentTriggerTime time.Time) time.Time {

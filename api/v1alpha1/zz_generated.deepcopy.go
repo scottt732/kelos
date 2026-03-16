@@ -194,7 +194,7 @@ func (in *GitHubCommentPolicy) DeepCopyInto(out *GitHubCommentPolicy) {
 	}
 	if in.AllowedTeams != nil {
 		in, out := &in.AllowedTeams, &out.AllowedTeams
-		*out = make([]string, len(*in))
+		*out = make([]GitHubTeamRef, len(*in))
 		copy(*out, *in)
 	}
 }

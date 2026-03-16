@@ -9,6 +9,128 @@ import (
 	"time"
 )
 
+func TestEvaluateGitHubCommentPolicy_BasicSemantics(t *testing.T) {
+	tests := []struct {
+		name            string
+		policy          githubCommentPolicy
+		body            string
+		comments        []githubComment
+		wantAllowed     bool
+		wantTriggerTime time.Time
+	}{
+		{
+			name:        "no filters configured",
+			wantAllowed: true,
+		},
+		{
+			name: "trigger in latest comment",
+			policy: githubCommentPolicy{
+				TriggerComment: "/kelos pick-up",
+			},
+			comments: []githubComment{
+				{Body: "/kelos pick-up", CreatedAt: "2026-01-02T12:00:00Z"},
+			},
+			wantAllowed:     true,
+			wantTriggerTime: time.Date(2026, 1, 2, 12, 0, 0, 0, time.UTC),
+		},
+		{
+			name: "trigger in body",
+			policy: githubCommentPolicy{
+				TriggerComment: "/kelos pick-up",
+			},
+			body:        "/kelos pick-up",
+			wantAllowed: true,
+		},
+		{
+			name: "exclude only blocks",
+			policy: githubCommentPolicy{
+				ExcludeComments: []string{"/kelos needs-input"},
+			},
+			comments: []githubComment{
+				{Body: "/kelos needs-input", CreatedAt: "2026-01-02T12:00:00Z"},
+			},
+			wantAllowed: false,
+		},
+		{
+			name: "latest trigger wins",
+			policy: githubCommentPolicy{
+				TriggerComment:  "/kelos pick-up",
+				ExcludeComments: []string{"/kelos needs-input"},
+			},
+			comments: []githubComment{
+				{Body: "/kelos needs-input", CreatedAt: "2026-01-02T12:00:00Z"},
+				{Body: "/kelos pick-up", CreatedAt: "2026-01-03T12:00:00Z"},
+			},
+			wantAllowed:     true,
+			wantTriggerTime: time.Date(2026, 1, 3, 12, 0, 0, 0, time.UTC),
+		},
+		{
+			name: "latest exclude wins",
+			policy: githubCommentPolicy{
+				TriggerComment:  "/kelos pick-up",
+				ExcludeComments: []string{"/kelos needs-input"},
+			},
+			comments: []githubComment{
+				{Body: "/kelos pick-up", CreatedAt: "2026-01-02T12:00:00Z"},
+				{Body: "/kelos needs-input", CreatedAt: "2026-01-03T12:00:00Z"},
+			},
+			wantAllowed: false,
+		},
+		{
+			name: "body exclude blocks when no later comments override it",
+			policy: githubCommentPolicy{
+				TriggerComment:  "/kelos pick-up",
+				ExcludeComments: []string{"/kelos needs-input"},
+			},
+			body:        "/kelos needs-input",
+			wantAllowed: false,
+		},
+		{
+			name: "body with both trigger and exclude rejects",
+			policy: githubCommentPolicy{
+				TriggerComment:  "/kelos pick-up",
+				ExcludeComments: []string{"/kelos needs-input"},
+			},
+			body:        "/kelos pick-up\n/kelos needs-input",
+			wantAllowed: false,
+		},
+		{
+			name: "latest valid trigger time wins",
+			policy: githubCommentPolicy{
+				TriggerComment: "/kelos pick-up",
+			},
+			comments: []githubComment{
+				{Body: "/kelos pick-up", CreatedAt: "not-a-timestamp"},
+				{Body: "/kelos pick-up", CreatedAt: "2026-01-02T12:00:00Z"},
+			},
+			wantAllowed:     true,
+			wantTriggerTime: time.Date(2026, 1, 2, 12, 0, 0, 0, time.UTC),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			allowed, triggerTime, err := evaluateGitHubCommentPolicy(
+				context.Background(),
+				tt.body,
+				githubUser{},
+				tt.comments,
+				tt.policy,
+				nil,
+			)
+			if err != nil {
+				t.Fatalf("evaluateGitHubCommentPolicy() error = %v", err)
+			}
+			if allowed != tt.wantAllowed {
+				t.Fatalf("Allowed = %v, want %v", allowed, tt.wantAllowed)
+			}
+			if !triggerTime.Equal(tt.wantTriggerTime) {
+				t.Fatalf("TriggerTime = %v, want %v", triggerTime, tt.wantTriggerTime)
+			}
+		})
+	}
+}
+
 func TestEvaluateGitHubCommentPolicy_IgnoresUnauthorizedLatestExclude(t *testing.T) {
 	policy := githubCommentPolicy{
 		TriggerComment:  "/kelos pick-up",
@@ -160,6 +282,51 @@ func TestGitHubCommentAuthorizer_MinimumPermission(t *testing.T) {
 	}
 }
 
+func TestGitHubCommentAuthorizer_DoesNotCacheErrors(t *testing.T) {
+	var permissionChecks int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/owner/repo/collaborators/alice/permission" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+
+		permissionChecks++
+		if permissionChecks == 1 {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(`{"message":"boom"}`))
+			return
+		}
+		json.NewEncoder(w).Encode(githubPermissionResponse{Permission: "admin"})
+	}))
+	defer server.Close()
+
+	authorizer, err := newGitHubCommentAuthorizer(
+		"owner",
+		"repo",
+		server.URL,
+		"",
+		server.Client(),
+		githubCommentPolicy{MinimumPermission: "write"},
+	)
+	if err != nil {
+		t.Fatalf("newGitHubCommentAuthorizer() error = %v", err)
+	}
+
+	if _, err := authorizer.isAuthorizedLogin(context.Background(), "alice"); err == nil {
+		t.Fatal("Expected first permission lookup to fail")
+	}
+
+	got, err := authorizer.isAuthorizedLogin(context.Background(), "alice")
+	if err != nil {
+		t.Fatalf("second isAuthorizedLogin() error = %v", err)
+	}
+	if !got {
+		t.Fatal("Expected second permission lookup to authorize alice")
+	}
+	if permissionChecks != 2 {
+		t.Fatalf("permission checks = %d, want %d", permissionChecks, 2)
+	}
+}
+
 func TestGitHubCommentAuthorizer_AllowedTeams(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -190,6 +357,44 @@ func TestGitHubCommentAuthorizer_AllowedTeams(t *testing.T) {
 	}
 	if got, err := authorizer.isAuthorizedLogin(context.Background(), "mallory"); err != nil || got {
 		t.Fatalf("isAuthorizedLogin(mallory) = %v, %v, want false, nil", got, err)
+	}
+}
+
+func TestGitHubCommentAuthorizer_TeamAuthorizationStillWorksAfterPermissionError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/owner/repo/collaborators/alice/permission":
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(`{"message":"boom"}`))
+		case "/orgs/my-org/teams/platform/memberships/alice":
+			json.NewEncoder(w).Encode(githubMembershipResponse{State: "active"})
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	authorizer, err := newGitHubCommentAuthorizer(
+		"owner",
+		"repo",
+		server.URL,
+		"",
+		server.Client(),
+		githubCommentPolicy{
+			AllowedTeams:      []string{"my-org/platform"},
+			MinimumPermission: "write",
+		},
+	)
+	if err != nil {
+		t.Fatalf("newGitHubCommentAuthorizer() error = %v", err)
+	}
+
+	got, err := authorizer.isAuthorizedLogin(context.Background(), "alice")
+	if err != nil {
+		t.Fatalf("isAuthorizedLogin(alice) error = %v", err)
+	}
+	if !got {
+		t.Fatal("Expected allowed team membership to authorize alice")
 	}
 }
 

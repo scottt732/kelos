@@ -34,7 +34,6 @@ type githubTeamRef struct {
 
 type githubAuthorizationDecision struct {
 	authorized bool
-	err        error
 }
 
 type githubCommentMatch struct {
@@ -133,21 +132,24 @@ func (a *githubCommentAuthorizer) isAuthorizedLogin(ctx context.Context, login s
 	}
 
 	if decision, ok := a.cache[login]; ok {
-		return decision.authorized, decision.err
+		return decision.authorized, nil
 	}
 
 	authorized, err := a.authorizeLogin(ctx, login)
-	a.cache[login] = githubAuthorizationDecision{authorized: authorized, err: err}
+	if err == nil {
+		a.cache[login] = githubAuthorizationDecision{authorized: authorized}
+	}
 	return authorized, err
 }
 
 func (a *githubCommentAuthorizer) authorizeLogin(ctx context.Context, login string) (bool, error) {
+	var firstErr error
+
 	if a.minimumPermission != "" {
 		ok, err := a.hasMinimumPermission(ctx, login)
 		if err != nil {
-			return false, err
-		}
-		if ok {
+			firstErr = err
+		} else if ok {
 			return true, nil
 		}
 	}
@@ -155,11 +157,18 @@ func (a *githubCommentAuthorizer) authorizeLogin(ctx context.Context, login stri
 	for _, team := range a.allowedTeams {
 		ok, err := a.isTeamMember(ctx, team, login)
 		if err != nil {
-			return false, err
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
 		}
 		if ok {
 			return true, nil
 		}
+	}
+
+	if firstErr != nil {
+		return false, firstErr
 	}
 
 	return false, nil

@@ -2135,7 +2135,7 @@ var _ = Describe("TaskSpawner Controller", func() {
 								TriggerComment:    "/kelos pick-up",
 								ExcludeComments:   []string{"/kelos needs-input"},
 								AllowedUsers:      []string{"alice"},
-								AllowedTeams:      []string{"my-org/platform"},
+								AllowedTeams:      []kelosv1alpha1.GitHubTeamRef{"my-org/platform"},
 								MinimumPermission: "write",
 							},
 						},
@@ -2168,7 +2168,7 @@ var _ = Describe("TaskSpawner Controller", func() {
 			Expect(createdTS.Spec.When.GitHubIssues.CommentPolicy.TriggerComment).To(Equal("/kelos pick-up"))
 			Expect(createdTS.Spec.When.GitHubIssues.CommentPolicy.ExcludeComments).To(ConsistOf("/kelos needs-input"))
 			Expect(createdTS.Spec.When.GitHubIssues.CommentPolicy.AllowedUsers).To(ConsistOf("alice"))
-			Expect(createdTS.Spec.When.GitHubIssues.CommentPolicy.AllowedTeams).To(ConsistOf("my-org/platform"))
+			Expect(createdTS.Spec.When.GitHubIssues.CommentPolicy.AllowedTeams).To(ConsistOf(kelosv1alpha1.GitHubTeamRef("my-org/platform")))
 			Expect(createdTS.Spec.When.GitHubIssues.CommentPolicy.MinimumPermission).To(Equal("write"))
 
 			By("Verifying a Deployment is created")
@@ -2228,6 +2228,63 @@ var _ = Describe("TaskSpawner Controller", func() {
 						},
 						WorkspaceRef: &kelosv1alpha1.WorkspaceReference{
 							Name: "test-workspace-comment-policy-invalid",
+						},
+					},
+					PollInterval: "5m",
+				},
+			}
+			err := k8sClient.Create(ctx, ts)
+			Expect(err).To(HaveOccurred())
+			Expect(apierrors.IsInvalid(err)).To(BeTrue())
+		})
+
+		It("Should reject commentPolicy with invalid allowedTeams format", func() {
+			By("Creating a namespace")
+			ns := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-taskspawner-comment-policy-invalid-team",
+				},
+			}
+			Expect(k8sClient.Create(ctx, ns)).Should(Succeed())
+
+			By("Creating a Workspace")
+			ws := &kelosv1alpha1.Workspace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-workspace-comment-policy-invalid-team",
+					Namespace: ns.Name,
+				},
+				Spec: kelosv1alpha1.WorkspaceSpec{
+					Repo: "https://github.com/kelos-dev/kelos.git",
+					Ref:  "main",
+				},
+			}
+			Expect(k8sClient.Create(ctx, ws)).Should(Succeed())
+
+			By("Creating an invalid TaskSpawner")
+			ts := &kelosv1alpha1.TaskSpawner{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-spawner-comment-policy-invalid-team",
+					Namespace: ns.Name,
+				},
+				Spec: kelosv1alpha1.TaskSpawnerSpec{
+					When: kelosv1alpha1.When{
+						GitHubIssues: &kelosv1alpha1.GitHubIssues{
+							State: "open",
+							CommentPolicy: &kelosv1alpha1.GitHubCommentPolicy{
+								AllowedTeams: []kelosv1alpha1.GitHubTeamRef{"platform"},
+							},
+						},
+					},
+					TaskTemplate: kelosv1alpha1.TaskTemplate{
+						Type: "claude-code",
+						Credentials: kelosv1alpha1.Credentials{
+							Type: kelosv1alpha1.CredentialTypeOAuth,
+							SecretRef: kelosv1alpha1.SecretReference{
+								Name: "claude-credentials",
+							},
+						},
+						WorkspaceRef: &kelosv1alpha1.WorkspaceReference{
+							Name: "test-workspace-comment-policy-invalid-team",
 						},
 					},
 					PollInterval: "5m",

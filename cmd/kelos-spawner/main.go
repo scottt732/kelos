@@ -471,6 +471,18 @@ type resolvedGitHubCommentPolicy struct {
 	MinimumPermission string
 }
 
+func githubTeamRefsToStrings(teams []kelosv1alpha1.GitHubTeamRef) []string {
+	if len(teams) == 0 {
+		return nil
+	}
+
+	out := make([]string, len(teams))
+	for i, team := range teams {
+		out[i] = string(team)
+	}
+	return out
+}
+
 func resolveGitHubCommentPolicy(policy *kelosv1alpha1.GitHubCommentPolicy, legacyTrigger string, legacyExclude []string) (resolvedGitHubCommentPolicy, error) {
 	legacyConfigured := strings.TrimSpace(legacyTrigger) != "" || len(legacyExclude) > 0
 	if policy != nil {
@@ -482,7 +494,7 @@ func resolveGitHubCommentPolicy(policy *kelosv1alpha1.GitHubCommentPolicy, legac
 			TriggerComment:    policy.TriggerComment,
 			ExcludeComments:   append([]string(nil), policy.ExcludeComments...),
 			AllowedUsers:      append([]string(nil), policy.AllowedUsers...),
-			AllowedTeams:      append([]string(nil), policy.AllowedTeams...),
+			AllowedTeams:      githubTeamRefsToStrings(policy.AllowedTeams),
 			MinimumPermission: policy.MinimumPermission,
 		}, nil
 	}

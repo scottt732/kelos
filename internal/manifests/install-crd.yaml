@@ -1155,13 +1155,14 @@ spec:
                               AllowedTeams restricts comment control to specific GitHub teams in
                               org/team-slug format.
                             items:
+                              description: GitHubTeamRef identifies a GitHub team
+                                in org/team-slug format.
+                              pattern: ^[^/]+/[^/]+$
                               type: string
                             type: array
                           allowedUsers:
-                            description: |-
-                              AllowedUsers restricts comment control to specific GitHub usernames.
-                              A matching command is honored if the actor matches any configured user,
-                              team, or minimum permission rule.
+                            description: AllowedUsers restricts comment control to
+                              specific GitHub usernames.
                             items:
                               type: string
                             type: array
@@ -1288,13 +1289,14 @@ spec:
                               AllowedTeams restricts comment control to specific GitHub teams in
                               org/team-slug format.
                             items:
+                              description: GitHubTeamRef identifies a GitHub team
+                                in org/team-slug format.
+                              pattern: ^[^/]+/[^/]+$
                               type: string
                             type: array
                           allowedUsers:
-                            description: |-
-                              AllowedUsers restricts comment control to specific GitHub usernames.
-                              A matching command is honored if the actor matches any configured user,
-                              team, or minimum permission rule.
+                            description: AllowedUsers restricts comment control to
+                              specific GitHub usernames.
                             items:
                               type: string
                             type: array
