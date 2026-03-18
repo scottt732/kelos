@@ -23,6 +23,7 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/yaml"
 
+	"github.com/kelos-dev/kelos/internal/helmchart"
 	"github.com/kelos-dev/kelos/internal/manifests"
 	"github.com/kelos-dev/kelos/internal/version"
 )
@@ -43,12 +44,11 @@ func newInstallCommand(cfg *ClientConfig) *cobra.Command {
 			if flagVersion != "" {
 				version.Version = flagVersion
 			}
-			controllerManifest := versionedManifest(manifests.InstallController, version.Version)
-			if imagePullPolicy != "" {
-				controllerManifest = withImagePullPolicy(controllerManifest, imagePullPolicy)
-			}
-			if disableHeartbeat {
-				controllerManifest = withoutTelemetryCronJob(controllerManifest)
+
+			vals := buildHelmValues(version.Version, imagePullPolicy, disableHeartbeat)
+			controllerManifest, err := helmchart.Render(manifests.ChartFS, vals)
+			if err != nil {
+				return fmt.Errorf("rendering chart: %w", err)
 			}
 
 			if dryRun {
@@ -99,70 +99,23 @@ func newInstallCommand(cfg *ClientConfig) *cobra.Command {
 	return cmd
 }
 
-// versionedManifest replaces ":latest" image tags with the given version
-// tag in the controller manifest. When ver is "latest" (development
-// builds), the manifest is returned as-is.
-func versionedManifest(data []byte, ver string) []byte {
-	if ver == "latest" {
-		return data
+// buildHelmValues constructs the values map for Helm chart rendering from CLI flags.
+func buildHelmValues(ver string, pullPolicy string, disableHeartbeat bool) map[string]interface{} {
+	imageVals := map[string]interface{}{
+		"tag": ver,
 	}
-	return bytes.ReplaceAll(data, []byte(":latest"), []byte(":"+ver))
-}
-
-// withImagePullPolicy inserts an imagePullPolicy field after each "image:"
-// line and a corresponding --*-image-pull-policy arg after each --*-image=
-// arg in the manifest YAML, preserving the original indentation.
-func withImagePullPolicy(data []byte, policy string) []byte {
-	var buf bytes.Buffer
-	scanner := bufio.NewScanner(bytes.NewReader(data))
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		buf.Write(line)
-		buf.WriteByte('\n')
-		trimmed := bytes.TrimLeft(line, " ")
-		indent := line[:len(line)-len(trimmed)]
-		if bytes.HasPrefix(trimmed, []byte("image:")) {
-			buf.Write(indent)
-			buf.WriteString("imagePullPolicy: ")
-			buf.WriteString(policy)
-			buf.WriteByte('\n')
-		} else if bytes.HasPrefix(trimmed, []byte("- --")) && bytes.Contains(trimmed, []byte("-image=")) {
-			eqIdx := bytes.IndexByte(trimmed, '=')
-			flagName := string(trimmed[2:eqIdx])
-			buf.Write(indent)
-			buf.WriteString("- ")
-			buf.WriteString(flagName)
-			buf.WriteString("-pull-policy=")
-			buf.WriteString(policy)
-			buf.WriteByte('\n')
+	if pullPolicy != "" {
+		imageVals["pullPolicy"] = pullPolicy
+	}
+	vals := map[string]interface{}{
+		"image": imageVals,
+	}
+	if disableHeartbeat {
+		vals["telemetry"] = map[string]interface{}{
+			"enabled": false,
 		}
 	}
-	return buf.Bytes()
-}
-
-// withoutTelemetryCronJob removes the kelos-telemetry CronJob from the manifest.
-func withoutTelemetryCronJob(data []byte) []byte {
-	objs, err := parseManifests(data)
-	if err != nil {
-		return data
-	}
-	var buf bytes.Buffer
-	first := true
-	for _, obj := range objs {
-		if obj.GetKind() == "CronJob" && obj.GetName() == "kelos-telemetry" {
-			continue
-		}
-		if !first {
-			buf.WriteString("---\n")
-		}
-		raw, err := yaml.Marshal(obj.Object)
-		if err != nil {
-			return data
-		}
-		buf.Write(raw)
-		first = false
-	}
-	return buf.Bytes()
+	return vals
 }
 
 // kelosGVRs lists the kelos custom resource GVRs that need to be cleaned up
@@ -200,6 +153,15 @@ func newUninstallCommand(cfg *ClientConfig) *cobra.Command {
 				return fmt.Errorf("creating dynamic client: %w", err)
 			}
 
+			// Render the chart with default values to identify resources to delete.
+			// Resource names and kinds do not change with values, so defaults
+			// suffice. This renders all resources (including telemetry CronJob)
+			// which is safe because deleteManifests ignores not-found errors.
+			controllerManifest, err := helmchart.Render(manifests.ChartFS, nil)
+			if err != nil {
+				return fmt.Errorf("rendering chart for uninstall: %w", err)
+			}
+
 			ctx := cmd.Context()
 
 			// Delete all custom resources first while the controller is
@@ -220,7 +182,7 @@ func newUninstallCommand(cfg *ClientConfig) *cobra.Command {
 			}
 
 			fmt.Fprintf(os.Stdout, "Removing kelos controller\n")
-			if err := deleteManifests(ctx, dc, dyn, manifests.InstallController); err != nil {
+			if err := deleteManifests(ctx, dc, dyn, controllerManifest); err != nil {
 				return fmt.Errorf("removing controller: %w", err)
 			}
 

@@ -9,6 +9,8 @@ cd "${REPO_ROOT}"
 START_MARKER="# BEGIN GENERATED: controller-rbac"
 END_MARKER="# END GENERATED: controller-rbac"
 
+CHART_RBAC="charts/kelos/templates/rbac.yaml"
+
 has_resource() {
   local file="$1"
   local kind="$2"
@@ -60,8 +62,8 @@ END {
 ' "${file}"
 }
 
-validate_manifest_resources() {
-  local file="$1"
+validate_chart_resources() {
+  local dir="$1"
   local -a required=(
     "Namespace kelos-system"
     "ServiceAccount kelos-controller"
@@ -77,20 +79,27 @@ validate_manifest_resources() {
   for entry in "${required[@]}"; do
     local kind="${entry%% *}"
     local name="${entry#* }"
-    if ! has_resource "${file}" "${kind}" "${name}"; then
-      echo "ERROR: install.yaml missing required resource ${kind}/${name}"
+    local found=0
+    for f in "${dir}"/templates/*.yaml; do
+      if has_resource "${f}" "${kind}" "${name}"; then
+        found=1
+        break
+      fi
+    done
+    if [[ "${found}" -eq 0 ]]; then
+      echo "ERROR: chart templates missing required resource ${kind}/${name}"
       exit 1
     fi
   done
 }
 
-if [[ "$(grep -Fxc "${START_MARKER}" install.yaml)" -ne 1 ]]; then
-  echo "ERROR: install.yaml must contain exactly one '${START_MARKER}' marker"
+if [[ "$(grep -Fxc "${START_MARKER}" "${CHART_RBAC}")" -ne 1 ]]; then
+  echo "ERROR: ${CHART_RBAC} must contain exactly one '${START_MARKER}' marker"
   exit 1
 fi
 
-if [[ "$(grep -Fxc "${END_MARKER}" install.yaml)" -ne 1 ]]; then
-  echo "ERROR: install.yaml must contain exactly one '${END_MARKER}' marker"
+if [[ "$(grep -Fxc "${END_MARKER}" "${CHART_RBAC}")" -ne 1 ]]; then
+  echo "ERROR: ${CHART_RBAC} must contain exactly one '${END_MARKER}' marker"
   exit 1
 fi
 
@@ -106,6 +115,7 @@ GOCACHE="${TMPDIR}/go-build-cache" "${CONTROLLER_GEN}" \
   paths="./..." \
   output:rbac:stdout >"${RBAC_FILE}"
 
+# Splice generated RBAC into the chart's rbac.yaml template.
 awk -v start="${START_MARKER}" -v end="${END_MARKER}" -v rbac="${RBAC_FILE}" '
 $0 == start {
   print
@@ -124,10 +134,13 @@ $0 == end {
 !in_generated_block {
   print
 }
-' install.yaml >"${TMPDIR}/install.yaml"
+' "${CHART_RBAC}" >"${TMPDIR}/rbac.yaml.new"
 
-validate_manifest_resources "${TMPDIR}/install.yaml"
+mv "${TMPDIR}/rbac.yaml.new" "${CHART_RBAC}"
 
-mv "${TMPDIR}/install.yaml" install.yaml
+validate_chart_resources "charts/kelos"
+
+# Copy CRDs and chart into internal/manifests for embedding.
 cp install-crd.yaml internal/manifests/install-crd.yaml
-cp install.yaml internal/manifests/install.yaml
+rm -rf internal/manifests/charts/kelos
+cp -r charts/kelos internal/manifests/charts/kelos

@@ -12,6 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 
+	"github.com/kelos-dev/kelos/internal/helmchart"
 	"github.com/kelos-dev/kelos/internal/manifests"
 )
 
@@ -146,29 +147,151 @@ func TestParseManifests_EmbeddedCRDs(t *testing.T) {
 	}
 }
 
-func TestParseManifests_EmbeddedController(t *testing.T) {
-	objs, err := parseManifests(manifests.InstallController)
+func renderDefaultChart(t *testing.T) []byte {
+	t.Helper()
+	vals := buildHelmValues("v0.0.0-test", "", false)
+	data, err := helmchart.Render(manifests.ChartFS, vals)
 	if err != nil {
-		t.Fatalf("parsing embedded controller manifest: %v", err)
+		t.Fatalf("rendering chart: %v", err)
+	}
+	return data
+}
+
+func TestRenderChart_DefaultValues(t *testing.T) {
+	data := renderDefaultChart(t)
+	objs, err := parseManifests(data)
+	if err != nil {
+		t.Fatalf("parsing rendered chart: %v", err)
 	}
 	if len(objs) == 0 {
-		t.Fatal("expected at least one controller object")
+		t.Fatal("expected at least one object from chart rendering")
 	}
 	kinds := make(map[string]bool)
 	for _, obj := range objs {
 		kinds[obj.GetKind()] = true
 	}
-	for _, expected := range []string{"Namespace", "ServiceAccount", "ClusterRole", "Deployment"} {
+	for _, expected := range []string{"Namespace", "ServiceAccount", "ClusterRole", "Deployment", "CronJob"} {
 		if !kinds[expected] {
-			t.Errorf("expected to find %s in controller manifest", expected)
+			t.Errorf("expected to find %s in rendered chart", expected)
 		}
 	}
 }
 
-func TestSpawnerRole_CanDeleteTasks(t *testing.T) {
-	objs, err := parseManifests(manifests.InstallController)
+func TestRenderChart_VersionSubstitution(t *testing.T) {
+	vals := buildHelmValues("v0.5.0", "", false)
+	data, err := helmchart.Render(manifests.ChartFS, vals)
 	if err != nil {
-		t.Fatalf("parsing embedded controller manifest: %v", err)
+		t.Fatalf("rendering chart: %v", err)
+	}
+	if bytes.Contains(data, []byte(":latest")) {
+		t.Error("expected all :latest tags to be replaced")
+	}
+	if !bytes.Contains(data, []byte(":v0.5.0")) {
+		t.Error("expected :v0.5.0 tags in rendered output")
+	}
+}
+
+func TestRenderChart_ImageArgs(t *testing.T) {
+	vals := buildHelmValues("v0.3.0", "", false)
+	data, err := helmchart.Render(manifests.ChartFS, vals)
+	if err != nil {
+		t.Fatalf("rendering chart: %v", err)
+	}
+	versionedArgs := []string{
+		"--claude-code-image=ghcr.io/kelos-dev/claude-code:v0.3.0",
+		"--codex-image=ghcr.io/kelos-dev/codex:v0.3.0",
+		"--gemini-image=ghcr.io/kelos-dev/gemini:v0.3.0",
+		"--opencode-image=ghcr.io/kelos-dev/opencode:v0.3.0",
+		"--spawner-image=ghcr.io/kelos-dev/kelos-spawner:v0.3.0",
+		"--token-refresher-image=ghcr.io/kelos-dev/kelos-token-refresher:v0.3.0",
+	}
+	for _, arg := range versionedArgs {
+		if !bytes.Contains(data, []byte(arg)) {
+			t.Errorf("expected rendered chart to contain %q", arg)
+		}
+	}
+}
+
+func TestRenderChart_ImagePullPolicy(t *testing.T) {
+	vals := buildHelmValues("v0.1.0", "Always", false)
+	data, err := helmchart.Render(manifests.ChartFS, vals)
+	if err != nil {
+		t.Fatalf("rendering chart: %v", err)
+	}
+	if !bytes.Contains(data, []byte("imagePullPolicy: Always")) {
+		t.Error("expected imagePullPolicy: Always in rendered output")
+	}
+	for _, arg := range []string{
+		"--claude-code-image-pull-policy=Always",
+		"--codex-image-pull-policy=Always",
+		"--gemini-image-pull-policy=Always",
+		"--opencode-image-pull-policy=Always",
+		"--spawner-image-pull-policy=Always",
+		"--token-refresher-image-pull-policy=Always",
+	} {
+		if !bytes.Contains(data, []byte(arg)) {
+			t.Errorf("expected %q in rendered output", arg)
+		}
+	}
+}
+
+func TestRenderChart_NoPullPolicyByDefault(t *testing.T) {
+	vals := buildHelmValues("latest", "", false)
+	data, err := helmchart.Render(manifests.ChartFS, vals)
+	if err != nil {
+		t.Fatalf("rendering chart: %v", err)
+	}
+	if bytes.Contains(data, []byte("imagePullPolicy:")) {
+		t.Error("expected no imagePullPolicy when not set")
+	}
+	if bytes.Contains(data, []byte("-pull-policy=")) {
+		t.Error("expected no -pull-policy args when not set")
+	}
+}
+
+func TestRenderChart_DisableHeartbeat(t *testing.T) {
+	vals := buildHelmValues("latest", "", true)
+	data, err := helmchart.Render(manifests.ChartFS, vals)
+	if err != nil {
+		t.Fatalf("rendering chart: %v", err)
+	}
+	objs, err := parseManifests(data)
+	if err != nil {
+		t.Fatalf("parsing rendered chart: %v", err)
+	}
+	for _, obj := range objs {
+		if obj.GetKind() == "CronJob" && obj.GetName() == "kelos-telemetry" {
+			t.Error("expected kelos-telemetry CronJob to be excluded")
+		}
+	}
+	// Other resources should still be present.
+	kinds := make(map[string]bool)
+	for _, obj := range objs {
+		kinds[obj.GetKind()] = true
+	}
+	for _, expected := range []string{"Namespace", "ServiceAccount", "Deployment"} {
+		if !kinds[expected] {
+			t.Errorf("expected %s to still be present after disabling heartbeat", expected)
+		}
+	}
+}
+
+func TestRenderChart_EnableHeartbeat(t *testing.T) {
+	vals := buildHelmValues("latest", "", false)
+	data, err := helmchart.Render(manifests.ChartFS, vals)
+	if err != nil {
+		t.Fatalf("rendering chart: %v", err)
+	}
+	if !bytes.Contains(data, []byte("kelos-telemetry")) {
+		t.Error("expected kelos-telemetry CronJob to be present by default")
+	}
+}
+
+func TestSpawnerRole_CanDeleteTasks(t *testing.T) {
+	data := renderDefaultChart(t)
+	objs, err := parseManifests(data)
+	if err != nil {
+		t.Fatalf("parsing rendered chart: %v", err)
 	}
 
 	var found bool
@@ -212,7 +335,7 @@ func TestSpawnerRole_CanDeleteTasks(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatal("kelos-spawner-role ClusterRole not found in embedded manifest")
+		t.Fatal("kelos-spawner-role ClusterRole not found in rendered chart")
 	}
 }
 
@@ -270,128 +393,6 @@ func TestUninstallCommand_RejectsExtraArgs(t *testing.T) {
 	}
 }
 
-func TestVersionedManifest_Latest(t *testing.T) {
-	data := []byte("image: ghcr.io/kelos-dev/kelos-controller:latest")
-	result := versionedManifest(data, "latest")
-	if !bytes.Equal(result, data) {
-		t.Errorf("expected manifest unchanged for latest version, got %s", string(result))
-	}
-}
-
-func TestVersionedManifest_Tagged(t *testing.T) {
-	data := []byte("image: ghcr.io/kelos-dev/kelos-controller:latest")
-	result := versionedManifest(data, "v0.1.0")
-	expected := []byte("image: ghcr.io/kelos-dev/kelos-controller:v0.1.0")
-	if !bytes.Equal(result, expected) {
-		t.Errorf("expected %s, got %s", string(expected), string(result))
-	}
-}
-
-func TestVersionedManifest_MultipleImages(t *testing.T) {
-	data := []byte(`image: ghcr.io/kelos-dev/kelos-controller:latest
-args:
-  - --spawner-image=ghcr.io/kelos-dev/kelos-spawner:latest
-  - --claude-code-image=ghcr.io/kelos-dev/claude-code:latest`)
-	result := versionedManifest(data, "v0.2.0")
-	if bytes.Contains(result, []byte(":latest")) {
-		t.Errorf("expected all :latest tags to be replaced, got %s", string(result))
-	}
-	if !bytes.Contains(result, []byte(":v0.2.0")) {
-		t.Errorf("expected :v0.2.0 tags in result, got %s", string(result))
-	}
-}
-
-func TestVersionedManifest_EmbeddedController(t *testing.T) {
-	result := versionedManifest(manifests.InstallController, "v1.0.0")
-	if bytes.Contains(result, []byte(":latest")) {
-		t.Error("Expected all :latest tags to be replaced in embedded controller manifest")
-	}
-	if !bytes.Contains(result, []byte(":v1.0.0")) {
-		t.Error("Expected :v1.0.0 tags in versioned controller manifest")
-	}
-}
-
-func TestVersionedManifest_EmbeddedControllerImageArgs(t *testing.T) {
-	// Verify the embedded manifest contains image flags that will be versioned.
-	expectedArgs := []string{
-		"--claude-code-image=ghcr.io/kelos-dev/claude-code:",
-		"--codex-image=ghcr.io/kelos-dev/codex:",
-		"--gemini-image=ghcr.io/kelos-dev/gemini:",
-		"--opencode-image=ghcr.io/kelos-dev/opencode:",
-		"--spawner-image=ghcr.io/kelos-dev/kelos-spawner:",
-		"--token-refresher-image=ghcr.io/kelos-dev/kelos-token-refresher:",
-	}
-	for _, arg := range expectedArgs {
-		if !bytes.Contains(manifests.InstallController, []byte(arg)) {
-			t.Errorf("expected embedded controller manifest to contain %q", arg)
-		}
-	}
-
-	// Verify all image args get the pinned version after substitution.
-	result := versionedManifest(manifests.InstallController, "v0.3.0")
-	versionedArgs := []string{
-		"--claude-code-image=ghcr.io/kelos-dev/claude-code:v0.3.0",
-		"--codex-image=ghcr.io/kelos-dev/codex:v0.3.0",
-		"--gemini-image=ghcr.io/kelos-dev/gemini:v0.3.0",
-		"--opencode-image=ghcr.io/kelos-dev/opencode:v0.3.0",
-		"--spawner-image=ghcr.io/kelos-dev/kelos-spawner:v0.3.0",
-		"--token-refresher-image=ghcr.io/kelos-dev/kelos-token-refresher:v0.3.0",
-	}
-	for _, arg := range versionedArgs {
-		if !bytes.Contains(result, []byte(arg)) {
-			t.Errorf("expected versioned manifest to contain %q", arg)
-		}
-	}
-}
-
-func TestWithImagePullPolicy(t *testing.T) {
-	data := []byte(`      containers:
-        - name: manager
-          image: ghcr.io/kelos-dev/kelos-controller:v0.1.0
-          args:
-            - --leader-elect
-            - --claude-code-image=ghcr.io/kelos-dev/claude-code:v0.1.0
-            - --spawner-image=ghcr.io/kelos-dev/kelos-spawner:v0.1.0`)
-	result := withImagePullPolicy(data, "Always")
-	// Verify container imagePullPolicy appears right after the image line.
-	expected := []byte("          image: ghcr.io/kelos-dev/kelos-controller:v0.1.0\n          imagePullPolicy: Always\n")
-	if !bytes.Contains(result, expected) {
-		t.Errorf("expected imagePullPolicy right after image line, got:\n%s", string(result))
-	}
-	// Verify per-image pull policy args are inserted after each --*-image= arg.
-	for _, arg := range []string{
-		"--claude-code-image-pull-policy=Always",
-		"--spawner-image-pull-policy=Always",
-	} {
-		if !bytes.Contains(result, []byte(arg)) {
-			t.Errorf("expected %q in result, got:\n%s", arg, string(result))
-		}
-	}
-	// Verify --leader-elect does not get a pull policy arg.
-	if bytes.Contains(result, []byte("--leader-elect-pull-policy")) {
-		t.Errorf("unexpected pull policy for --leader-elect, got:\n%s", string(result))
-	}
-}
-
-func TestWithImagePullPolicy_EmbeddedController(t *testing.T) {
-	result := withImagePullPolicy(manifests.InstallController, "IfNotPresent")
-	if !bytes.Contains(result, []byte("imagePullPolicy: IfNotPresent")) {
-		t.Errorf("expected imagePullPolicy: IfNotPresent in embedded controller manifest, got:\n%s", string(result[:min(len(result), 500)]))
-	}
-	for _, arg := range []string{
-		"--claude-code-image-pull-policy=IfNotPresent",
-		"--codex-image-pull-policy=IfNotPresent",
-		"--gemini-image-pull-policy=IfNotPresent",
-		"--opencode-image-pull-policy=IfNotPresent",
-		"--spawner-image-pull-policy=IfNotPresent",
-		"--token-refresher-image-pull-policy=IfNotPresent",
-	} {
-		if !bytes.Contains(result, []byte(arg)) {
-			t.Errorf("expected %q in result", arg)
-		}
-	}
-}
-
 func TestInstallCommand_ImagePullPolicyFlag(t *testing.T) {
 	cmd := NewRootCommand()
 	cmd.SetArgs([]string{"install", "--dry-run", "--image-pull-policy", "Always"})
@@ -422,29 +423,6 @@ func TestInstallCommand_VersionFlag(t *testing.T) {
 	}
 	if !strings.Contains(output, ":v0.5.0") {
 		t.Errorf("expected :v0.5.0 tags in output, got:\n%s", output[:min(len(output), 500)])
-	}
-}
-
-func TestWithoutTelemetryCronJob(t *testing.T) {
-	result := withoutTelemetryCronJob(manifests.InstallController)
-	objs, err := parseManifests(result)
-	if err != nil {
-		t.Fatalf("parsing result: %v", err)
-	}
-	for _, obj := range objs {
-		if obj.GetKind() == "CronJob" && obj.GetName() == "kelos-telemetry" {
-			t.Error("expected kelos-telemetry CronJob to be removed")
-		}
-	}
-	// Other resources should still be present.
-	kinds := make(map[string]bool)
-	for _, obj := range objs {
-		kinds[obj.GetKind()] = true
-	}
-	for _, expected := range []string{"Namespace", "ServiceAccount", "Deployment"} {
-		if !kinds[expected] {
-			t.Errorf("expected %s to still be present after removing telemetry CronJob", expected)
-		}
 	}
 }
 
@@ -587,5 +565,60 @@ func TestWaitForCustomResourceDeletion_RespectsContextCancellation(t *testing.T)
 	err := waitForCustomResourceDeletion(ctx, client)
 	if err == nil {
 		t.Fatal("expected error from cancelled context")
+	}
+}
+
+func TestBuildHelmValues(t *testing.T) {
+	tests := []struct {
+		name             string
+		version          string
+		pullPolicy       string
+		disableHeartbeat bool
+		checkFn          func(t *testing.T, vals map[string]interface{})
+	}{
+		{
+			name:    "default values",
+			version: "latest",
+			checkFn: func(t *testing.T, vals map[string]interface{}) {
+				img := vals["image"].(map[string]interface{})
+				if img["tag"] != "latest" {
+					t.Errorf("expected tag latest, got %v", img["tag"])
+				}
+				if _, ok := img["pullPolicy"]; ok {
+					t.Error("expected no pullPolicy when empty")
+				}
+				if _, ok := vals["telemetry"]; ok {
+					t.Error("expected no telemetry key when not disabled")
+				}
+			},
+		},
+		{
+			name:       "with pull policy",
+			version:    "v1.0.0",
+			pullPolicy: "Never",
+			checkFn: func(t *testing.T, vals map[string]interface{}) {
+				img := vals["image"].(map[string]interface{})
+				if img["pullPolicy"] != "Never" {
+					t.Errorf("expected pullPolicy Never, got %v", img["pullPolicy"])
+				}
+			},
+		},
+		{
+			name:             "disable heartbeat",
+			version:          "latest",
+			disableHeartbeat: true,
+			checkFn: func(t *testing.T, vals map[string]interface{}) {
+				tel := vals["telemetry"].(map[string]interface{})
+				if tel["enabled"] != false {
+					t.Errorf("expected telemetry.enabled=false, got %v", tel["enabled"])
+				}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			vals := buildHelmValues(tt.version, tt.pullPolicy, tt.disableHeartbeat)
+			tt.checkFn(t, vals)
+		})
 	}
 }
