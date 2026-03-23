@@ -29,7 +29,7 @@ Supports **Claude Code**, **OpenAI Codex**, **Google Gemini**, **OpenCode**, **C
 
 Kelos orchestrates the flow from external events to autonomous execution:
 
-<img width="2310" height="1582" alt="kelos-resources" src="https://github.com/user-attachments/assets/d3bdcd94-540c-43b8-9e14-1633c0c58dba" />
+<img width="2310" height="1582" alt="kelos-resources" src="https://github.com/user-attachments/assets/a03c388e-cc28-4a25-972f-e0e506b4d583" />
 
 You define what needs to be done, and Kelos handles the "how" — from cloning the right repo and injecting credentials to running the agent and capturing its outputs (branch names, commit SHAs, PR URLs, and token usage).
 
