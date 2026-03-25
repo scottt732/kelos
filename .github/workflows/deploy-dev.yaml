@@ -53,7 +53,9 @@ jobs:
         run: |
           bin/kelos install --version main --image-pull-policy Always \
             --spawner-resource-requests cpu=100m,memory=128Mi \
-            --token-refresher-resource-requests cpu=50m,memory=64Mi
+            --token-refresher-resource-requests cpu=50m,memory=64Mi \
+            --controller-resource-requests cpu=10m,memory=64Mi \
+            --controller-resource-limits cpu=500m,memory=128Mi
           kubectl rollout restart deployment/kelos-controller-manager -n kelos-system
           kubectl rollout status deployment/kelos-controller-manager -n kelos-system --timeout=120s
           kubectl rollout restart deployment -l app.kubernetes.io/component=spawner -n "${KELOS_NAMESPACE}"
