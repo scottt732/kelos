@@ -112,6 +112,8 @@ jobs:
         run: |
           sed -i 's|tag: "latest"|tag: "${{ github.ref_name }}"|' \
             internal/manifests/charts/kelos/values.yaml
+          grep -q 'tag: "${{ github.ref_name }}"' \
+            internal/manifests/charts/kelos/values.yaml
 
       - name: Package Helm chart
         run: |
