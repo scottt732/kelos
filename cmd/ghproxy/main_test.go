@@ -190,8 +190,8 @@ func TestProxy_PassesThroughNonGET(t *testing.T) {
 
 func TestProxy_DefaultUpstream(t *testing.T) {
 	// Verify that the cache key includes the default upstream.
-	key := cacheKey(defaultUpstream, "/repos/owner/repo", "", "")
-	if key != "https://api.github.com|/repos/owner/repo||" {
+	key := cacheKey(defaultUpstream, "/repos/owner/repo", "")
+	if key != "https://api.github.com|/repos/owner/repo|" {
 		t.Fatalf("unexpected cache key: %s", key)
 	}
 }
@@ -319,21 +319,16 @@ func TestProxy_AllowsConfiguredUpstream(t *testing.T) {
 	}
 }
 
-func TestCacheKeyVariesByAcceptAndAuthorization(t *testing.T) {
-	key1 := cacheKey(defaultUpstream, "/repos/o/r/issues", "application/json", "token one")
-	key2 := cacheKey(defaultUpstream, "/repos/o/r/issues", "application/vnd.github.raw+json", "token one")
-	key3 := cacheKey(defaultUpstream, "/repos/o/r/issues", "application/json", "token two")
+func TestCacheKeyVariesByAcceptNotAuthorization(t *testing.T) {
+	key1 := cacheKey(defaultUpstream, "/repos/o/r/issues", "application/json")
+	key2 := cacheKey(defaultUpstream, "/repos/o/r/issues", "application/vnd.github.raw+json")
 
 	if key1 == key2 {
 		t.Fatal("expected cache key to vary by Accept header")
 	}
-	if key1 == key3 {
-		t.Fatal("expected cache key to vary by Authorization header")
+	if key1 != cacheKey(defaultUpstream, "/repos/o/r/issues", "application/json") {
+		t.Fatal("expected cache key to be stable for identical inputs")
 	}
-	if key1 == cacheKey(defaultUpstream, "/repos/o/r/issues", "application/json", "token one") {
-		return
-	}
-	t.Fatal("expected cache key to be stable for identical inputs")
 }
 
 func TestRewriteLinkHeader(t *testing.T) {

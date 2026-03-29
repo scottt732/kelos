@@ -1,8 +1,6 @@
 package main
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"flag"
 	"fmt"
 	"io"
@@ -67,23 +65,13 @@ func newProxy(allowed []string, cacheTTL time.Duration) *proxy {
 	}
 }
 
-// cacheKey returns a key that includes the upstream and the request path+query
-// and varies by headers that can affect the upstream response.
-func cacheKey(upstream, pathAndQuery, accept, authorization string) string {
-	return strings.Join([]string{
-		upstream,
-		pathAndQuery,
-		accept,
-		authorizationKey(authorization),
-	}, "|")
-}
-
-func authorizationKey(authorization string) string {
-	if authorization == "" {
-		return ""
-	}
-	sum := sha256.Sum256([]byte(authorization))
-	return hex.EncodeToString(sum[:])
+// cacheKey returns a key that includes the upstream, request path+query, and
+// Accept header so that the same path on different upstreams or with different
+// content types is cached separately. Authorization is intentionally excluded
+// so that spawners with different tokens share cached responses for the same
+// repo, enabling cross-pod deduplication.
+func cacheKey(upstream, pathAndQuery, accept string) string {
+	return upstream + "|" + pathAndQuery + "|" + accept
 }
 
 // rewriteLinkHeader rewrites absolute URLs in a Link header, replacing the
@@ -143,7 +131,7 @@ func (p *proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		scheme = "https"
 	}
 	proxyBase := scheme + "://" + r.Host
-	key := cacheKey(upstream, r.URL.RequestURI(), r.Header.Get("Accept"), r.Header.Get("Authorization"))
+	key := cacheKey(upstream, r.URL.RequestURI(), r.Header.Get("Accept"))
 	var entry *cacheEntry
 	if r.Method == http.MethodGet {
 		p.mu.RLock()
