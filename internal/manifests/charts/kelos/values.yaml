@@ -32,3 +32,34 @@ controller:
   resources:
     requests: {}
     limits: {}
+webhookServer:
+  image: ghcr.io/kelos-dev/kelos-webhook-server
+  sources:
+    github:
+      enabled: false
+      replicas: 1
+      secretName: ""
+  resources:
+    limits:
+      cpu: 500m
+      memory: 128Mi
+    requests:
+      cpu: 10m
+      memory: 64Mi
+  ingress:
+    enabled: false
+    className: ""
+    host: ""
+    annotations: {}
+    tls:
+      enabled: false
+      secretName: ""
+  gateway:
+    enabled: false
+    gatewayClassName: ""
+    gatewayName: "kelos-webhook-gateway"
+    host: ""
+    annotations: {}
+    tls:
+      enabled: false
+      certificateRefs: []

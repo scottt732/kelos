@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"time"
 
@@ -16,10 +17,12 @@ import (
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	kelosv1alpha1 "github.com/kelos-dev/kelos/api/v1alpha1"
@@ -52,6 +55,11 @@ type TaskSpawnerReconciler struct {
 // isCronBased returns true if the TaskSpawner uses a cron schedule.
 func isCronBased(ts *kelosv1alpha1.TaskSpawner) bool {
 	return ts.Spec.When.Cron != nil
+}
+
+// isWebhookBased returns true if the TaskSpawner is webhook-driven.
+func isWebhookBased(ts *kelosv1alpha1.TaskSpawner) bool {
+	return ts.Spec.When.GitHubWebhook != nil
 }
 
 // Reconcile handles TaskSpawner reconciliation.
@@ -96,7 +104,85 @@ func (r *TaskSpawnerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return r.reconcileCronJob(ctx, req, &ts, isSuspended)
 	}
 
+	// Webhook-based TaskSpawners don't need deployments or cronjobs.
+	if isWebhookBased(&ts) {
+		return r.reconcileWebhook(ctx, req, &ts, isSuspended)
+	}
+
 	return r.reconcileDeployment(ctx, req, &ts, isSuspended)
+}
+
+// reconcileWebhook handles webhook-based TaskSpawners by cleaning up any stale resources.
+func (r *TaskSpawnerReconciler) reconcileWebhook(ctx context.Context, req ctrl.Request, ts *kelosv1alpha1.TaskSpawner, isSuspended bool) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
+
+	// Clean up any stale Deployment or CronJob from previous configurations
+	if err := r.deleteStaleResource(ctx, req.NamespacedName, &appsv1.Deployment{}, "Deployment"); err != nil {
+		return ctrl.Result{}, err
+	}
+	if err := r.deleteStaleResource(ctx, req.NamespacedName, &batchv1.CronJob{}, "CronJob"); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// Determine the desired phase for webhook TaskSpawners
+	desiredPhase := kelosv1alpha1.TaskSpawnerPhaseRunning
+	desiredMessage := "Webhook-driven TaskSpawner ready"
+	if isSuspended {
+		desiredPhase = kelosv1alpha1.TaskSpawnerPhaseSuspended
+		desiredMessage = "Suspended by user"
+	}
+
+	// Count active tasks for this webhook TaskSpawner
+	activeTasks, err := r.countActiveTasks(ctx, req.NamespacedName)
+	if err != nil {
+		logger.Error(err, "Failed to count active tasks")
+		return ctrl.Result{}, err
+	}
+
+	// Update status to clear any deployment/cronjob names and set appropriate phase
+	needsStatusUpdate := ts.Status.DeploymentName != "" || ts.Status.CronJobName != "" ||
+		ts.Status.Phase != desiredPhase || ts.Status.ActiveTasks != activeTasks
+	if needsStatusUpdate {
+		if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			if getErr := r.Get(ctx, req.NamespacedName, ts); getErr != nil {
+				return getErr
+			}
+			ts.Status.DeploymentName = ""
+			ts.Status.CronJobName = ""
+			ts.Status.Phase = desiredPhase
+			ts.Status.Message = desiredMessage
+			ts.Status.ActiveTasks = activeTasks
+			return r.Status().Update(ctx, ts)
+		}); err != nil {
+			logger.Error(err, "Unable to update TaskSpawner status")
+			return ctrl.Result{}, err
+		}
+		logger.Info("Updated webhook TaskSpawner status", "phase", desiredPhase, "activeTasks", activeTasks)
+	}
+
+	return ctrl.Result{}, nil
+}
+
+// countActiveTasks counts the number of active (non-terminal) Tasks for a TaskSpawner.
+func (r *TaskSpawnerReconciler) countActiveTasks(ctx context.Context, taskSpawnerName types.NamespacedName) (int, error) {
+	var taskList kelosv1alpha1.TaskList
+	if err := r.List(ctx, &taskList,
+		client.InNamespace(taskSpawnerName.Namespace),
+		client.MatchingLabels{"kelos.dev/taskspawner": taskSpawnerName.Name},
+	); err != nil {
+		return 0, fmt.Errorf("listing tasks for TaskSpawner %s: %w", taskSpawnerName.Name, err)
+	}
+
+	activeTasks := 0
+	for i := range taskList.Items {
+		task := &taskList.Items[i]
+		// Count tasks that are not in terminal phases
+		if task.Status.Phase != kelosv1alpha1.TaskPhaseSucceeded && task.Status.Phase != kelosv1alpha1.TaskPhaseFailed {
+			activeTasks++
+		}
+	}
+
+	return activeTasks, nil
 }
 
 // reconcileDeployment handles the Deployment lifecycle for polling-based TaskSpawners.
@@ -565,9 +651,9 @@ func (r *TaskSpawnerReconciler) updateCronJob(ctx context.Context, ts *kelosv1al
 	return nil
 }
 
-// deleteStaleResource deletes a resource by NamespacedName if it exists.
+// deleteStaleResource deletes a resource by NamespacedName if it exists and is owned by a TaskSpawner.
 // This is used to clean up the old resource type when switching between
-// Deployment-based and CronJob-based TaskSpawners.
+// Deployment-based, CronJob-based, and webhook-based TaskSpawners.
 func (r *TaskSpawnerReconciler) deleteStaleResource(ctx context.Context, key types.NamespacedName, obj client.Object, kind string) error {
 	logger := log.FromContext(ctx)
 
@@ -576,6 +662,21 @@ func (r *TaskSpawnerReconciler) deleteStaleResource(ctx context.Context, key typ
 			return nil
 		}
 		return err
+	}
+
+	// Only delete if this resource is owned by a TaskSpawner to avoid deleting unrelated resources
+	ownerRefs := obj.GetOwnerReferences()
+	isOwnedByTaskSpawner := false
+	for _, ref := range ownerRefs {
+		if ref.APIVersion == "kelos.dev/v1alpha1" && ref.Kind == "TaskSpawner" && ref.Controller != nil && *ref.Controller {
+			isOwnedByTaskSpawner = true
+			break
+		}
+	}
+
+	if !isOwnedByTaskSpawner {
+		logger.Info("Skipping deletion of "+kind+" not owned by TaskSpawner", "name", key.Name)
+		return nil
 	}
 
 	if err := r.Delete(ctx, obj); err != nil {
@@ -708,6 +809,11 @@ func (r *TaskSpawnerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&batchv1.CronJob{}).
 		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.findTaskSpawnersForSecret)).
 		Watches(&kelosv1alpha1.Workspace{}, handler.EnqueueRequestsFromMapFunc(r.findTaskSpawnersForWorkspace)).
+		Watches(&kelosv1alpha1.Task{}, handler.EnqueueRequestsFromMapFunc(r.findTaskSpawnersForTask),
+			builder.WithPredicates(predicate.NewPredicateFuncs(func(obj client.Object) bool {
+				_, hasLabel := obj.GetLabels()["kelos.dev/taskspawner"]
+				return hasLabel
+			}))).
 		Complete(r)
 }
 
@@ -785,6 +891,28 @@ func (r *TaskSpawnerReconciler) findTaskSpawnersForWorkspace(ctx context.Context
 		}
 	}
 	return requests
+}
+
+// findTaskSpawnersForTask maps a Task change to the TaskSpawner that owns it.
+// This allows webhook TaskSpawners to update their activeTasks count when Tasks complete/fail.
+func (r *TaskSpawnerReconciler) findTaskSpawnersForTask(ctx context.Context, obj client.Object) []reconcile.Request {
+	task, ok := obj.(*kelosv1alpha1.Task)
+	if !ok {
+		return nil
+	}
+
+	// Tasks have a label that identifies their TaskSpawner
+	taskSpawnerName, ok := task.Labels["kelos.dev/taskspawner"]
+	if !ok {
+		return nil
+	}
+
+	return []reconcile.Request{{
+		NamespacedName: types.NamespacedName{
+			Namespace: task.Namespace,
+			Name:      taskSpawnerName,
+		},
+	}}
 }
 
 // resourceRequirementsEqual compares two ResourceRequirements using semantic

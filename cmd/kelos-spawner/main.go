@@ -27,6 +27,7 @@ import (
 	"github.com/kelos-dev/kelos/internal/logging"
 	"github.com/kelos-dev/kelos/internal/reporting"
 	"github.com/kelos-dev/kelos/internal/source"
+	"github.com/kelos-dev/kelos/internal/taskbuilder"
 )
 
 const ghProxyURL = "http://ghproxy.kelos-system:8888"
@@ -338,70 +339,46 @@ func runCycleWithSourceCore(ctx context.Context, cl client.Client, key types.Nam
 
 		taskName := fmt.Sprintf("%s-%s", ts.Name, item.ID)
 
-		prompt, err := source.RenderPrompt(ts.Spec.TaskTemplate.PromptTemplate, item)
+		templateVars := source.WorkItemToTemplateVars(item)
+
+		tb, err := taskbuilder.NewTaskBuilder(cl)
 		if err != nil {
-			log.Error(err, "rendering prompt", "item", item.ID)
+			log.Error(err, "creating task builder", "item", item.ID)
 			continue
 		}
 
-		renderedLabels, renderedAnnotations, err := renderTaskTemplateMetadata(&ts, item)
+		task, err := tb.BuildTask(
+			taskName,
+			ts.Namespace,
+			&ts.Spec.TaskTemplate,
+			templateVars,
+			&taskbuilder.SpawnerRef{
+				Name: ts.Name,
+			},
+		)
 		if err != nil {
-			log.Error(err, "Rendering task template metadata", "item", item.ID)
+			log.Error(err, "building task", "item", item.ID)
 			continue
 		}
 
-		labels := make(map[string]string)
-		for k, v := range renderedLabels {
-			labels[k] = v
-		}
-		labels["kelos.dev/taskspawner"] = ts.Name
-
-		annotations := mergeStringMaps(renderedAnnotations, sourceAnnotations(&ts, item))
-
-		task := &kelosv1alpha1.Task{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:        taskName,
-				Namespace:   ts.Namespace,
-				Labels:      labels,
-				Annotations: annotations,
-			},
-			Spec: kelosv1alpha1.TaskSpec{
-				Type:                    ts.Spec.TaskTemplate.Type,
-				Prompt:                  prompt,
-				Credentials:             ts.Spec.TaskTemplate.Credentials,
-				Model:                   ts.Spec.TaskTemplate.Model,
-				Image:                   ts.Spec.TaskTemplate.Image,
-				TTLSecondsAfterFinished: ts.Spec.TaskTemplate.TTLSecondsAfterFinished,
-				PodOverrides:            ts.Spec.TaskTemplate.PodOverrides,
-			},
-		}
-
-		if ts.Spec.TaskTemplate.WorkspaceRef != nil {
-			task.Spec.WorkspaceRef = ts.Spec.TaskTemplate.WorkspaceRef
-		}
-		if ts.Spec.TaskTemplate.AgentConfigRef != nil {
-			task.Spec.AgentConfigRef = ts.Spec.TaskTemplate.AgentConfigRef
-		}
-
-		if len(ts.Spec.TaskTemplate.DependsOn) > 0 {
-			task.Spec.DependsOn = ts.Spec.TaskTemplate.DependsOn
-		}
-		if ts.Spec.TaskTemplate.Branch != "" {
-			branch, err := source.RenderTemplate(ts.Spec.TaskTemplate.Branch, item)
-			if err != nil {
-				log.Error(err, "rendering branch template", "item", item.ID)
-				continue
+		// Apply source-specific annotations (GitHub reporting metadata)
+		srcAnnotations := sourceAnnotations(&ts, item)
+		if len(srcAnnotations) > 0 {
+			if task.Annotations == nil {
+				task.Annotations = make(map[string]string)
 			}
-			task.Spec.Branch = branch
+			for k, v := range srcAnnotations {
+				task.Annotations[k] = v
+			}
 		}
 
 		// Propagate upstream repo for fork workflows. Explicit template
 		// value takes precedence; otherwise derive from the source repo
 		// override (githubIssues.repo or githubPullRequests.repo).
-		if ts.Spec.TaskTemplate.UpstreamRepo != "" {
-			task.Spec.UpstreamRepo = ts.Spec.TaskTemplate.UpstreamRepo
-		} else if upstreamRepo := deriveUpstreamRepo(&ts); upstreamRepo != "" {
-			task.Spec.UpstreamRepo = upstreamRepo
+		if task.Spec.UpstreamRepo == "" {
+			if upstreamRepo := deriveUpstreamRepo(&ts); upstreamRepo != "" {
+				task.Spec.UpstreamRepo = upstreamRepo
+			}
 		}
 
 		if err := cl.Create(ctx, task); err != nil {
@@ -469,52 +446,6 @@ func runCycleWithSourceCore(ctx context.Context, cl client.Client, key types.Nam
 	discoveryTotal.Inc()
 
 	return nil
-}
-
-// mergeStringMaps returns a new map with keys from base, then keys from overlay
-// overwriting on duplicate keys.
-func mergeStringMaps(base, overlay map[string]string) map[string]string {
-	if len(base) == 0 && len(overlay) == 0 {
-		return nil
-	}
-	out := make(map[string]string)
-	for k, v := range base {
-		out[k] = v
-	}
-	for k, v := range overlay {
-		out[k] = v
-	}
-	return out
-}
-
-// renderTaskTemplateMetadata renders taskTemplate.metadata label and annotation
-// values using source.RenderTemplate.
-func renderTaskTemplateMetadata(ts *kelosv1alpha1.TaskSpawner, item source.WorkItem) (labels map[string]string, annotations map[string]string, err error) {
-	meta := ts.Spec.TaskTemplate.Metadata
-	if meta == nil {
-		return nil, nil, nil
-	}
-	if len(meta.Labels) > 0 {
-		labels = make(map[string]string)
-		for k, v := range meta.Labels {
-			rendered, err := source.RenderTemplate(v, item)
-			if err != nil {
-				return nil, nil, fmt.Errorf("label %q: %w", k, err)
-			}
-			labels[k] = rendered
-		}
-	}
-	if len(meta.Annotations) > 0 {
-		annotations = make(map[string]string)
-		for k, v := range meta.Annotations {
-			rendered, err := source.RenderTemplate(v, item)
-			if err != nil {
-				return nil, nil, fmt.Errorf("annotation %q: %w", k, err)
-			}
-			annotations[k] = rendered
-		}
-	}
-	return labels, annotations, nil
 }
 
 // sourceAnnotations returns annotations that stamp GitHub source metadata
