@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"golang.org/x/sync/singleflight"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
@@ -44,6 +46,7 @@ type cacheEntry struct {
 type proxy struct {
 	mu              sync.RWMutex
 	cache           map[string]*cacheEntry
+	inflight        singleflight.Group
 	upstream        *http.Client
 	upstreamBaseURL string
 	cacheTTL        time.Duration
@@ -116,10 +119,9 @@ type responsePayload struct {
 }
 
 func (p *proxy) fetchResponse(log logr.Logger, upstream string, key string, r *http.Request) (*responsePayload, error) {
-	var entry *cacheEntry
 	if r.Method == http.MethodGet {
 		p.mu.RLock()
-		entry = p.cache[key]
+		entry := p.cache[key]
 		p.mu.RUnlock()
 		if p.isFresh(entry) {
 			return &responsePayload{
@@ -132,8 +134,25 @@ func (p *proxy) fetchResponse(log logr.Logger, upstream string, key string, r *h
 				headers:     map[string]string{},
 			}, nil
 		}
+
+		// Coalesce concurrent GET requests for the same cache key into
+		// a single upstream call. A detached context is used so that one
+		// caller's cancellation does not abort the shared request.
+		v, err, _ := p.inflight.Do(key, func() (interface{}, error) {
+			return p.doGETUpstream(log, upstream, key, r.URL.RequestURI(), r.Header)
+		})
+		if err != nil {
+			return nil, err
+		}
+		return v.(*responsePayload), nil
 	}
 
+	return p.doNonGET(log, upstream, key, r)
+}
+
+// doNonGET handles non-GET requests, forwarding the original request body
+// and context directly to upstream without singleflight coalescing.
+func (p *proxy) doNonGET(log logr.Logger, upstream, key string, r *http.Request) (*responsePayload, error) {
 	target, err := url.Parse(upstream + r.URL.RequestURI())
 	if err != nil {
 		return nil, fmt.Errorf("parsing upstream URL: %w", err)
@@ -152,7 +171,65 @@ func (p *proxy) fetchResponse(log logr.Logger, upstream string, key string, r *h
 	if token := p.tokenResolver(); token != "" {
 		outReq.Header.Set("Authorization", "token "+token)
 	}
-	if r.Method == http.MethodGet && entry != nil {
+
+	resp, err := p.upstream.Do(outReq)
+	if err != nil {
+		return nil, fmt.Errorf("upstream request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("reading upstream response body: %w", err)
+	}
+
+	return &responsePayload{
+		statusCode:  resp.StatusCode,
+		cacheResult: "skip",
+		contentType: resp.Header.Get("Content-Type"),
+		etag:        resp.Header.Get("ETag"),
+		link:        resp.Header.Get("Link"),
+		body:        body,
+		headers: map[string]string{
+			"X-RateLimit-Limit":     resp.Header.Get("X-RateLimit-Limit"),
+			"X-RateLimit-Remaining": resp.Header.Get("X-RateLimit-Remaining"),
+			"X-RateLimit-Reset":     resp.Header.Get("X-RateLimit-Reset"),
+		},
+	}, nil
+}
+
+// doGETUpstream performs a GET request to upstream, coalescing concurrent
+// requests via singleflight. Uses a detached context so that one caller's
+// cancellation does not abort the shared request.
+func (p *proxy) doGETUpstream(log logr.Logger, upstream, key, requestURI string, hdr http.Header) (*responsePayload, error) {
+	p.mu.RLock()
+	entry := p.cache[key]
+	p.mu.RUnlock()
+
+	target, err := url.Parse(upstream + requestURI)
+	if err != nil {
+		return nil, fmt.Errorf("parsing upstream URL: %w", err)
+	}
+
+	// Use a detached context with a timeout so that a single caller's
+	// cancellation does not cancel the coalesced upstream request.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	outReq, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating upstream request: %w", err)
+	}
+
+	for _, h := range []string{"Accept", "User-Agent"} {
+		if v := hdr.Get(h); v != "" {
+			outReq.Header.Set(h, v)
+		}
+	}
+	if token := p.tokenResolver(); token != "" {
+		outReq.Header.Set("Authorization", "token "+token)
+	}
+	if entry != nil {
 		outReq.Header.Set("If-None-Match", entry.etag)
 	}
 
@@ -188,7 +265,7 @@ func (p *proxy) fetchResponse(log logr.Logger, upstream string, key string, r *h
 		return nil, fmt.Errorf("reading upstream response body: %w", err)
 	}
 
-	if r.Method == http.MethodGet && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		if etag := resp.Header.Get("ETag"); etag != "" {
 			p.mu.Lock()
 			p.cache[key] = &cacheEntry{
@@ -203,14 +280,10 @@ func (p *proxy) fetchResponse(log logr.Logger, upstream string, key string, r *h
 		}
 	}
 
-	cacheResult := "skip"
-	if r.Method == http.MethodGet {
-		cacheResult = "miss"
-		log.Info("Cache miss", "key", key, "status", resp.StatusCode, "resource", source.ClassifyResource(r.URL.Path))
-	}
+	log.Info("Cache miss", "key", key, "status", resp.StatusCode, "resource", source.ClassifyResource(requestURI))
 	return &responsePayload{
 		statusCode:  resp.StatusCode,
-		cacheResult: cacheResult,
+		cacheResult: "miss",
 		contentType: resp.Header.Get("Content-Type"),
 		etag:        resp.Header.Get("ETag"),
 		link:        resp.Header.Get("Link"),

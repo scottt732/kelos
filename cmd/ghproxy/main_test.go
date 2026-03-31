@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -441,5 +442,92 @@ func TestRewriteLinkHeader(t *testing.T) {
 				t.Errorf("rewriteLinkHeader():\n  got:  %s\n  want: %s", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestProxy_CoalescesConcurrentGETRequests(t *testing.T) {
+	var calls atomic.Int32
+	// gate blocks the upstream handler so all concurrent requests queue up.
+	gate := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		<-gate
+		w.Header().Set("ETag", `"v1"`)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"repos":["a"]}`))
+	}))
+	defer upstream.Close()
+
+	p := newProxy(upstream.URL, time.Minute, nil)
+	proxyServer := httptest.NewServer(p)
+	defer proxyServer.Close()
+
+	const concurrency = 10
+	var wg sync.WaitGroup
+	bodies := make([]string, concurrency)
+	statuses := make([]int, concurrency)
+
+	for i := range concurrency {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			req, _ := http.NewRequest("GET", proxyServer.URL+"/repos/owner/repo", nil)
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Errorf("request %d failed: %v", idx, err)
+				return
+			}
+			defer resp.Body.Close()
+			body, _ := io.ReadAll(resp.Body)
+			bodies[idx] = string(body)
+			statuses[idx] = resp.StatusCode
+		}(i)
+	}
+
+	// Wait briefly for all requests to reach the proxy, then unblock upstream.
+	time.Sleep(50 * time.Millisecond)
+	close(gate)
+	wg.Wait()
+
+	if got := calls.Load(); got != 1 {
+		t.Errorf("expected 1 upstream call (singleflight coalescing), got %d", got)
+	}
+	for i, body := range bodies {
+		if body != `{"repos":["a"]}` {
+			t.Errorf("request %d got unexpected body: %s", i, body)
+		}
+		if statuses[i] != http.StatusOK {
+			t.Errorf("request %d got status %d, want 200", i, statuses[i])
+		}
+	}
+}
+
+func TestProxy_DoesNotCoalesceNonGET(t *testing.T) {
+	var calls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusCreated)
+		w.Write([]byte(`{"id":1}`))
+	}))
+	defer upstream.Close()
+
+	p := newProxy(upstream.URL, time.Minute, nil)
+	proxyServer := httptest.NewServer(p)
+	defer proxyServer.Close()
+
+	for range 3 {
+		req, _ := http.NewRequest("POST", proxyServer.URL+"/repos/owner/repo/issues", nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("expected 201, got %d", resp.StatusCode)
+		}
+	}
+
+	if got := calls.Load(); got != 3 {
+		t.Fatalf("expected 3 upstream calls for POST (no coalescing), got %d", got)
 	}
 }
