@@ -349,7 +349,10 @@ func runCycleWithSourceCore(ctx context.Context, cl client.Client, key types.Nam
 			&ts.Spec.TaskTemplate,
 			templateVars,
 			&taskbuilder.SpawnerRef{
-				Name: ts.Name,
+				Name:       ts.Name,
+				UID:        string(ts.UID),
+				APIVersion: kelosv1alpha1.GroupVersion.String(),
+				Kind:       "TaskSpawner",
 			},
 		)
 		if err != nil {

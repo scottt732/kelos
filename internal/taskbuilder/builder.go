@@ -143,14 +143,12 @@ func (tb *TaskBuilder) BuildTask(
 		task.Labels["kelos.dev/taskspawner"] = spawnerRef.Name
 
 		isController := true
-		blockOwnerDeletion := true
 		task.OwnerReferences = append(task.OwnerReferences, metav1.OwnerReference{
-			APIVersion:         spawnerRef.APIVersion,
-			Kind:               spawnerRef.Kind,
-			Name:               spawnerRef.Name,
-			UID:                types.UID(spawnerRef.UID),
-			Controller:         &isController,
-			BlockOwnerDeletion: &blockOwnerDeletion,
+			APIVersion: spawnerRef.APIVersion,
+			Kind:       spawnerRef.Kind,
+			Name:       spawnerRef.Name,
+			UID:        types.UID(spawnerRef.UID),
+			Controller: &isController,
 		})
 	}
 
