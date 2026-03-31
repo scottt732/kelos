@@ -147,12 +147,12 @@ func (p *proxy) fetchResponse(log logr.Logger, upstream string, key string, r *h
 		return v.(*responsePayload), nil
 	}
 
-	return p.doNonGET(log, upstream, key, r)
+	return p.doNonGET(upstream, r)
 }
 
 // doNonGET handles non-GET requests, forwarding the original request body
 // and context directly to upstream without singleflight coalescing.
-func (p *proxy) doNonGET(log logr.Logger, upstream, key string, r *http.Request) (*responsePayload, error) {
+func (p *proxy) doNonGET(upstream string, r *http.Request) (*responsePayload, error) {
 	target, err := url.Parse(upstream + r.URL.RequestURI())
 	if err != nil {
 		return nil, fmt.Errorf("parsing upstream URL: %w", err)

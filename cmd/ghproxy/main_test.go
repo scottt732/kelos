@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -529,5 +530,73 @@ func TestProxy_DoesNotCoalesceNonGET(t *testing.T) {
 
 	if got := calls.Load(); got != 3 {
 		t.Fatalf("expected 3 upstream calls for POST (no coalescing), got %d", got)
+	}
+}
+
+func TestProxy_SingleflightSurvivesCallerCancellation(t *testing.T) {
+	var calls atomic.Int32
+	// gate blocks the upstream handler until we signal it.
+	gate := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		<-gate
+		w.Header().Set("ETag", `"v1"`)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+
+	p := newProxy(upstream.URL, time.Minute, nil)
+	proxyServer := httptest.NewServer(p)
+	defer proxyServer.Close()
+
+	var wg sync.WaitGroup
+
+	// First request: will be cancelled before upstream responds.
+	cancelCtx, cancel := context.WithCancel(context.Background())
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		req, _ := http.NewRequestWithContext(cancelCtx, "GET", proxyServer.URL+"/repos/owner/repo", nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err == nil {
+			resp.Body.Close()
+		}
+		// We expect this request to either error or succeed — either is fine.
+	}()
+
+	// Wait for the request to reach upstream, then cancel the first caller.
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	// Second request: should still succeed because the upstream call uses
+	// a detached context that is not affected by the first caller's cancel.
+	var body string
+	var status int
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		req, _ := http.NewRequest("GET", proxyServer.URL+"/repos/owner/repo", nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Errorf("second request failed: %v", err)
+			return
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		body = string(b)
+		status = resp.StatusCode
+	}()
+
+	// Let upstream respond.
+	time.Sleep(50 * time.Millisecond)
+	close(gate)
+	wg.Wait()
+
+	if body != `{"ok":true}` {
+		t.Errorf("second request got unexpected body: %s", body)
+	}
+	if status != http.StatusOK {
+		t.Errorf("second request got status %d, want 200", status)
 	}
 }
