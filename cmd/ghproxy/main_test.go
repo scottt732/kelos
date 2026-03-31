@@ -1,13 +1,18 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	"github.com/kelos-dev/kelos/internal/source"
 )
@@ -328,6 +333,52 @@ func TestCacheKeyVariesByAcceptNotAuthorization(t *testing.T) {
 	}
 	if key1 != cacheKey(defaultUpstream, "/repos/o/r/issues", "application/json") {
 		t.Fatal("expected cache key to be stable for identical inputs")
+	}
+}
+
+func TestProxy_LogsCacheMiss(t *testing.T) {
+	var buf bytes.Buffer
+	ctrl.SetLogger(zap.New(zap.WriteTo(&buf), zap.UseDevMode(true)))
+
+	now := time.Unix(1700000000, 0)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"v1"`)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+
+	p := newProxy([]string{upstream.URL}, time.Minute)
+	p.now = func() time.Time { return now }
+	proxyServer := httptest.NewServer(p)
+	defer proxyServer.Close()
+
+	doGET := func() {
+		req, _ := http.NewRequest("GET", proxyServer.URL+"/repos/owner/repo/issues", nil)
+		req.Header.Set(source.UpstreamBaseURLHeader, upstream.URL)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+	}
+
+	// First request is a cache miss — should log.
+	doGET()
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, "Cache miss") {
+		t.Errorf("expected cache miss log on first request, got: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "/repos/owner/repo/issues") {
+		t.Errorf("expected log to contain request path, got: %s", logOutput)
+	}
+
+	// Second request within TTL is a fresh hit — no additional miss log.
+	buf.Reset()
+	now = now.Add(10 * time.Second)
+	doGET()
+	if strings.Contains(buf.String(), "Cache miss") {
+		t.Error("unexpected cache miss log for fresh cache hit")
 	}
 }
 

@@ -235,6 +235,7 @@ func (p *proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	statusCode = resp.StatusCode
 	if r.Method == http.MethodGet {
 		cacheResult = "miss"
+		log.Info("Cache miss", "path", r.URL.RequestURI(), "upstream", upstream, "status", resp.StatusCode, "resource", resource)
 	}
 	w.WriteHeader(resp.StatusCode)
 	w.Write(body)
