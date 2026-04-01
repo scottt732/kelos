@@ -118,6 +118,10 @@ type responsePayload struct {
 	headers     map[string]string
 }
 
+func recordUpstreamRequest(method, statusCode, resource, reason string) {
+	githubAPIUpstreamRequestsTotal.WithLabelValues(method, statusCode, resource, reason).Inc()
+}
+
 func (p *proxy) fetchResponse(log logr.Logger, upstream string, key string, r *http.Request) (*responsePayload, error) {
 	if r.Method == http.MethodGet {
 		p.mu.RLock()
@@ -153,6 +157,7 @@ func (p *proxy) fetchResponse(log logr.Logger, upstream string, key string, r *h
 // doNonGET handles non-GET requests, forwarding the original request body
 // and context directly to upstream without singleflight coalescing.
 func (p *proxy) doNonGET(upstream string, r *http.Request) (*responsePayload, error) {
+	resource := source.ClassifyResource(r.URL.Path)
 	target, err := url.Parse(upstream + r.URL.RequestURI())
 	if err != nil {
 		return nil, fmt.Errorf("parsing upstream URL: %w", err)
@@ -174,9 +179,11 @@ func (p *proxy) doNonGET(upstream string, r *http.Request) (*responsePayload, er
 
 	resp, err := p.upstream.Do(outReq)
 	if err != nil {
+		recordUpstreamRequest(r.Method, "error", resource, "skip")
 		return nil, fmt.Errorf("upstream request failed: %w", err)
 	}
 	defer resp.Body.Close()
+	recordUpstreamRequest(r.Method, strconv.Itoa(resp.StatusCode), resource, "skip")
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -205,6 +212,11 @@ func (p *proxy) doGETUpstream(log logr.Logger, upstream, key, requestURI string,
 	p.mu.RLock()
 	entry := p.cache[key]
 	p.mu.RUnlock()
+	resource := source.ClassifyResource(requestURI)
+	reason := "miss"
+	if entry != nil {
+		reason = "revalidate"
+	}
 
 	target, err := url.Parse(upstream + requestURI)
 	if err != nil {
@@ -235,9 +247,11 @@ func (p *proxy) doGETUpstream(log logr.Logger, upstream, key, requestURI string,
 
 	resp, err := p.upstream.Do(outReq)
 	if err != nil {
+		recordUpstreamRequest(http.MethodGet, "error", resource, reason)
 		return nil, fmt.Errorf("upstream request failed: %w", err)
 	}
 	defer resp.Body.Close()
+	recordUpstreamRequest(http.MethodGet, strconv.Itoa(resp.StatusCode), resource, reason)
 
 	if resp.StatusCode == http.StatusNotModified && entry != nil {
 		refreshed := *entry
@@ -280,7 +294,7 @@ func (p *proxy) doGETUpstream(log logr.Logger, upstream, key, requestURI string,
 		}
 	}
 
-	log.Info("Cache miss", "key", key, "status", resp.StatusCode, "resource", source.ClassifyResource(requestURI))
+	log.Info("Cache miss", "key", key, "status", resp.StatusCode, "resource", resource)
 	return &responsePayload{
 		statusCode:  resp.StatusCode,
 		cacheResult: "miss",

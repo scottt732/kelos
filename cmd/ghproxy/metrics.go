@@ -12,8 +12,19 @@ var (
 		},
 		[]string{"method", "status_code", "resource", "cache"},
 	)
+
+	githubAPIUpstreamRequestsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "kelos_ghproxy_github_api_upstream_requests_total",
+			Help: "Total number of upstream GitHub API requests made by ghproxy",
+		},
+		[]string{"method", "status_code", "resource", "reason"},
+	)
 )
 
 func init() {
-	prometheus.MustRegister(githubAPIRequestsTotal)
+	prometheus.MustRegister(
+		githubAPIRequestsTotal,
+		githubAPIUpstreamRequestsTotal,
+	)
 }
