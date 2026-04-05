@@ -251,6 +251,13 @@ $ kelos logs task-r8x2q -f
 
 The task name (e.g. `task-r8x2q`) is auto-generated. Use `--name` to set a custom name, or `-w` to watch task status after creation. To stream agent logs, run `kelos logs <task-name> -f`.
 
+You can also read the prompt from a file with `--prompt-file`, or pipe it from stdin:
+
+```bash
+$ kelos run --prompt-file prompt.txt
+$ echo "Fix the flaky test" | kelos run --prompt-file -
+```
+
 The agent clones your repo, makes changes, and can push a branch or open a PR.
 
 > **Tip:** If something goes wrong, check the controller logs with

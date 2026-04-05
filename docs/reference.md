@@ -354,7 +354,8 @@ The `kelos` CLI lets you manage the full lifecycle without writing YAML.
 
 ### `kelos run` Flags
 
-- `--prompt, -p`: Task prompt (required)
+- `--prompt, -p`: Task prompt (required unless `--prompt-file` is set)
+- `--prompt-file`: Read task prompt from a file path; use `-` to read from stdin (mutually exclusive with `--prompt`)
 - `--type, -t`: Agent type (default: `claude-code`)
 - `--model`: Model override
 - `--image`: Custom agent image
