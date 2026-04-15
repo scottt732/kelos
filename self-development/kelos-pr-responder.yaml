@@ -37,7 +37,7 @@ spec:
       name: kelos-agent
     model: opus
     type: claude-code
-    ttlSecondsAfterFinished: 3600
+    ttlSecondsAfterFinished: 864000
     credentials:
       type: oauth
       secretRef:
