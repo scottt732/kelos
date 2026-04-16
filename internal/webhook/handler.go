@@ -23,8 +23,9 @@ import (
 type WebhookSource string
 
 const (
-	GitHubSource WebhookSource = "github"
-	LinearSource WebhookSource = "linear"
+	GitHubSource  WebhookSource = "github"
+	LinearSource  WebhookSource = "linear"
+	GenericSource WebhookSource = "generic"
 
 	// GitHub webhook headers
 	GitHubEventHeader     = "X-GitHub-Event"
@@ -36,10 +37,11 @@ const (
 	LinearDeliveryHeader  = "Linear-Delivery"
 )
 
-// ParsedWebhook holds parsed webhook data for either GitHub or Linear sources.
+// ParsedWebhook holds parsed webhook data for GitHub, Linear, or generic sources.
 type ParsedWebhook struct {
-	GitHub *GitHubEventData
-	Linear *LinearEventData
+	GitHub  *GitHubEventData
+	Linear  *LinearEventData
+	Generic *GenericEventData
 	// Common fields for logging and task naming
 	ID    string
 	Title string
@@ -111,10 +113,15 @@ func (d *DeliveryCache) cleanup() {
 }
 
 // NewWebhookHandler creates a new webhook handler for the specified source.
+// For GenericSource, the HMAC secret is looked up per-request from
+// <SOURCE>_WEBHOOK_SECRET env vars, so WEBHOOK_SECRET is not required.
 func NewWebhookHandler(ctx context.Context, client client.Client, source WebhookSource, log logr.Logger) (*WebhookHandler, error) {
-	secret := []byte(os.Getenv("WEBHOOK_SECRET"))
-	if len(secret) == 0 {
-		return nil, fmt.Errorf("WEBHOOK_SECRET environment variable is required")
+	var secret []byte
+	if source != GenericSource {
+		secret = []byte(os.Getenv("WEBHOOK_SECRET"))
+		if len(secret) == 0 {
+			return nil, fmt.Errorf("WEBHOOK_SECRET environment variable is required")
+		}
 	}
 
 	taskBuilder, err := taskbuilder.NewTaskBuilder(client)
@@ -164,6 +171,7 @@ func (h *WebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Extract headers and validate signature
 	var eventType, signature, deliveryID string
+	var genericSpawners []*v1alpha1.TaskSpawner
 
 	switch h.source {
 	case GitHubSource:
@@ -198,6 +206,28 @@ func (h *WebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+	case GenericSource:
+		sourceName, sourceErr := extractSourceFromPath(r.URL.Path)
+		if sourceErr != nil {
+			log.Info("Invalid webhook path", "path", r.URL.Path, "error", sourceErr)
+			http.Error(w, sourceErr.Error(), http.StatusBadRequest)
+			return
+		}
+
+		eventType = sourceName
+
+		// Single API list call provides matching spawners, avoiding a
+		// redundant list in processWebhook.
+		genericSpawners = h.getGenericSpawners(ctx)
+
+		// Derive delivery ID from the mapped "id" field when possible so
+		// that retries of the same logical event deduplicate even if the
+		// raw JSON encoding differs. Fall back to body hash when no
+		// spawner maps an id for this source.
+		deliveryID = extractGenericDeliveryID(sourceName, body, genericSpawners)
+
+		log.Info("Processing generic webhook", "source", sourceName, "deliveryID", deliveryID, "payloadSize", len(body))
+
 	default:
 		log.Error(fmt.Errorf("unsupported source: %s", h.source), "Unsupported webhook source")
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
@@ -211,8 +241,9 @@ func (h *WebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Process the webhook
-	_, err = h.processWebhook(ctx, eventType, body, deliveryID)
+	// Process the webhook. For generic sources, pass pre-fetched spawners
+	// to avoid a redundant List call.
+	_, err = h.processWebhook(ctx, eventType, body, deliveryID, genericSpawners)
 	if err != nil {
 		log.Error(err, "Failed to process webhook", "eventType", eventType, "deliveryID", deliveryID)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
@@ -233,8 +264,10 @@ func linearDeliveryID(body []byte) string {
 	return "linear-" + hex.EncodeToString(sum[:])
 }
 
-// processWebhook processes a validated webhook payload.
-func (h *WebhookHandler) processWebhook(ctx context.Context, eventType string, payload []byte, deliveryID string) (bool, error) {
+// processWebhook processes a validated webhook payload. When prefetchedSpawners
+// is non-nil (generic source), it is used directly instead of listing spawners
+// again, avoiding a redundant API call.
+func (h *WebhookHandler) processWebhook(ctx context.Context, eventType string, payload []byte, deliveryID string, prefetchedSpawners []*v1alpha1.TaskSpawner) (bool, error) {
 	log := h.log.WithValues("eventType", eventType, "deliveryID", deliveryID)
 
 	// Parse the webhook payload once up front and reuse across matching and task creation.
@@ -276,14 +309,29 @@ func (h *WebhookHandler) processWebhook(ctx context.Context, eventType string, p
 				log = log.WithValues("linearTitle", parsed.Title)
 			}
 		}
+
+	case GenericSource:
+		eventData, err := ParseGenericWebhook(payload)
+		if err != nil {
+			return false, fmt.Errorf("failed to parse generic webhook: %w", err)
+		}
+		parsed.Generic = eventData
+		// ID and Title are extracted per-spawner via fieldMapping in matchesSpawner
+		log = log.WithValues("genericSource", eventType)
 	}
 
 	log.Info("Processing webhook event", "resourceID", parsed.ID, "title", parsed.Title)
 
-	// Get all TaskSpawners that match this source type
-	spawners, err := h.getMatchingSpawners(ctx)
-	if err != nil {
-		return false, fmt.Errorf("failed to get matching spawners: %w", err)
+	// Use pre-fetched spawners when available (generic source), otherwise list.
+	var spawners []*v1alpha1.TaskSpawner
+	if prefetchedSpawners != nil {
+		spawners = prefetchedSpawners
+	} else {
+		var err error
+		spawners, err = h.getMatchingSpawners(ctx)
+		if err != nil {
+			return false, fmt.Errorf("failed to get matching spawners: %w", err)
+		}
 	}
 
 	if len(spawners) == 0 {
@@ -386,6 +434,10 @@ func (h *WebhookHandler) getMatchingSpawners(ctx context.Context) ([]*v1alpha1.T
 			if spawner.Spec.When.LinearWebhook != nil {
 				matching = append(matching, spawner)
 			}
+		case GenericSource:
+			if spawner.Spec.When.GenericWebhook != nil {
+				matching = append(matching, spawner)
+			}
 		}
 	}
 
@@ -415,6 +467,22 @@ func (h *WebhookHandler) matchesSpawner(spawner *v1alpha1.TaskSpawner, eventType
 		}
 		return MatchesLinearEvent(spawner.Spec.When.LinearWebhook, parsed.Linear)
 
+	case GenericSource:
+		if spawner.Spec.When.GenericWebhook == nil {
+			return false, nil
+		}
+		// Check source name matches the URL path segment
+		if spawner.Spec.When.GenericWebhook.Source != eventType {
+			return false, nil
+		}
+		// Extract fields for this spawner's fieldMapping
+		if err := parsed.Generic.ExtractFields(spawner.Spec.When.GenericWebhook.FieldMapping); err != nil {
+			return false, err
+		}
+		parsed.ID = parsed.Generic.Fields["id"]
+		parsed.Title = parsed.Generic.Fields["title"]
+		return MatchesGenericFilters(spawner.Spec.When.GenericWebhook.Filters, parsed.Generic.Payload)
+
 	default:
 		return false, fmt.Errorf("unsupported source: %s", h.source)
 	}
@@ -433,6 +501,9 @@ func (h *WebhookHandler) createTask(ctx context.Context, spawner *v1alpha1.TaskS
 
 	case LinearSource:
 		templateVars = ExtractLinearWorkItem(parsed.Linear)
+
+	case GenericSource:
+		templateVars = ExtractGenericWorkItem(parsed.Generic)
 
 	default:
 		return fmt.Errorf("unsupported source: %s", h.source)
@@ -480,4 +551,21 @@ func (h *WebhookHandler) createTask(ctx context.Context, spawner *v1alpha1.TaskS
 	}
 
 	return nil
+}
+
+// getGenericSpawners returns all TaskSpawners that have a generic webhook
+// spec. This avoids a redundant second List call during processWebhook.
+func (h *WebhookHandler) getGenericSpawners(ctx context.Context) []*v1alpha1.TaskSpawner {
+	var spawnerList v1alpha1.TaskSpawnerList
+	if err := h.client.List(ctx, &spawnerList, &client.ListOptions{}); err != nil {
+		return nil
+	}
+
+	var spawners []*v1alpha1.TaskSpawner
+	for i := range spawnerList.Items {
+		if spawnerList.Items[i].Spec.When.GenericWebhook != nil {
+			spawners = append(spawners, &spawnerList.Items[i])
+		}
+	}
+	return spawners
 }
