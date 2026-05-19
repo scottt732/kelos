@@ -98,6 +98,7 @@ func TestInitCommand_ConfigContainsCredentialURLs(t *testing.T) {
 		"https://console.anthropic.com/settings/keys",
 		"https://platform.openai.com/api-keys",
 		"https://aistudio.google.com/app/apikey",
+		"https://cursor.com/dashboard",
 	}
 	for _, s := range expectedStrings {
 		if !strings.Contains(content, s) {

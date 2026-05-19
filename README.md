@@ -177,6 +177,12 @@ type: codex
 ```
 Or set `apiKey` with an OpenAI API key instead.
 
+**Gemini API key** (for Google Gemini):
+Create one at [aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey). Set `apiKey` in your config and use `type: gemini`.
+
+**Cursor API key** (for Cursor CLI):
+Obtain one from the Integrations tab at [cursor.com/dashboard](https://cursor.com/dashboard). Set `apiKey` in your config and use `type: cursor`.
+
 **GitHub token** (for pushing branches and creating PRs):
 Create a [Personal Access Token](https://github.com/settings/tokens) with `repo` scope (and `workflow` if your repo uses GitHub Actions).
 
