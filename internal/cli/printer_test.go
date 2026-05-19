@@ -361,7 +361,7 @@ func TestPrintTaskSpawnerTableSlack(t *testing.T) {
 	spawners := []kelosv1alpha1.TaskSpawner{
 		{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:              "slack-spawner",
+				Name:              "chat-trigger",
 				CreationTimestamp: metav1.NewTime(time.Now().Add(-1 * time.Hour)),
 			},
 			Spec: kelosv1alpha1.TaskSpawnerSpec{
