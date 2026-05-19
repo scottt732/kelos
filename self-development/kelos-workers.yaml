@@ -26,6 +26,7 @@ spec:
       - `make test` — run all unit tests
       - `make test-integration` — run integration tests
       - `make build` — build binary
+    - When polling for a process to finish in shell, do not use `pgrep -f 'CMD_NAME'`: the caller's own argv contains the pattern, so pgrep matches itself and the loop never exits (deadlocks the pod). Either capture the PID at launch (`cmd & PID=$!`) and poll with `kill -0 "$PID"` / `wait "$PID"`, or exclude self from the match (`pgrep -f 'CMD_NAME' | grep -vw $$`).
     - Always try to add or improve tests when modifying code
     - Logging conventions: start log messages with capital letters and do not end with punctuation
     - Commit messages: do not include PR links in commit messages
