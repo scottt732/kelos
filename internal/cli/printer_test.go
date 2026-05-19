@@ -314,8 +314,120 @@ func TestPrintTaskSpawnerTableGitHubPullRequests(t *testing.T) {
 	printTaskSpawnerTable(&buf, spawners, false)
 	output := buf.String()
 
-	if !strings.Contains(output, "my-ws") {
-		t.Errorf("expected workspace name as source in output, got %q", output)
+	if !strings.Contains(output, "GitHub Pull Requests") {
+		t.Errorf("expected 'GitHub Pull Requests' as source in output, got %q", output)
+	}
+	if strings.Contains(output, "my-ws") {
+		t.Errorf("expected workspace name not to appear in source column, got %q", output)
+	}
+}
+
+func TestPrintTaskSpawnerTableGitHubIssuesWithWorkspace(t *testing.T) {
+	spawners := []kelosv1alpha1.TaskSpawner{
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:              "issue-spawner",
+				CreationTimestamp: metav1.NewTime(time.Now().Add(-1 * time.Hour)),
+			},
+			Spec: kelosv1alpha1.TaskSpawnerSpec{
+				When: kelosv1alpha1.When{
+					GitHubIssues: &kelosv1alpha1.GitHubIssues{},
+				},
+				TaskTemplate: kelosv1alpha1.TaskTemplate{
+					WorkspaceRef: &kelosv1alpha1.WorkspaceReference{
+						Name: "my-ws",
+					},
+				},
+			},
+			Status: kelosv1alpha1.TaskSpawnerStatus{
+				Phase: kelosv1alpha1.TaskSpawnerPhaseRunning,
+			},
+		},
+	}
+
+	var buf bytes.Buffer
+	printTaskSpawnerTable(&buf, spawners, false)
+	output := buf.String()
+
+	if !strings.Contains(output, "GitHub Issues") {
+		t.Errorf("expected 'GitHub Issues' as source in output, got %q", output)
+	}
+	if strings.Contains(output, "my-ws") {
+		t.Errorf("expected workspace name not to appear in source column, got %q", output)
+	}
+}
+
+func TestPrintTaskSpawnerTableSlack(t *testing.T) {
+	spawners := []kelosv1alpha1.TaskSpawner{
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:              "slack-spawner",
+				CreationTimestamp: metav1.NewTime(time.Now().Add(-1 * time.Hour)),
+			},
+			Spec: kelosv1alpha1.TaskSpawnerSpec{
+				When: kelosv1alpha1.When{
+					Slack: &kelosv1alpha1.Slack{
+						Channels: []string{"C0123456789"},
+					},
+				},
+			},
+			Status: kelosv1alpha1.TaskSpawnerStatus{
+				Phase: kelosv1alpha1.TaskSpawnerPhaseRunning,
+			},
+		},
+	}
+
+	var buf bytes.Buffer
+	printTaskSpawnerTable(&buf, spawners, false)
+	output := buf.String()
+
+	if !strings.Contains(output, "Slack") {
+		t.Errorf("expected 'Slack' as source in output, got %q", output)
+	}
+}
+
+func TestPrintTaskSpawnerDetailSlack(t *testing.T) {
+	spawner := &kelosv1alpha1.TaskSpawner{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "slack-spawner",
+			Namespace: "default",
+		},
+		Spec: kelosv1alpha1.TaskSpawnerSpec{
+			When: kelosv1alpha1.When{
+				Slack: &kelosv1alpha1.Slack{
+					Channels: []string{"C0123456789", "C9876543210"},
+					Triggers: []kelosv1alpha1.SlackTrigger{
+						{Pattern: "deploy"},
+						{Pattern: "rollback"},
+					},
+					ExcludePatterns: []string{"^ignore"},
+				},
+			},
+			TaskTemplate: kelosv1alpha1.TaskTemplate{
+				Type: "claude-code",
+			},
+			PollInterval: "5m",
+		},
+		Status: kelosv1alpha1.TaskSpawnerStatus{
+			Phase:             kelosv1alpha1.TaskSpawnerPhaseRunning,
+			TotalDiscovered:   1,
+			TotalTasksCreated: 1,
+		},
+	}
+
+	var buf bytes.Buffer
+	printTaskSpawnerDetail(&buf, spawner)
+	output := buf.String()
+
+	for _, expected := range []string{
+		"Source:             Slack",
+		"Channels:           [C0123456789 C9876543210]",
+		"Triggers:           [deploy rollback]",
+		"Exclude Patterns:   [^ignore]",
+	} {
+		if !strings.Contains(output, expected) {
+			t.Errorf("expected %q in detail output, got:\n%s", expected, output)
+		}
 	}
 }
 

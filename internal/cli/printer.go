@@ -157,17 +157,9 @@ func printTaskSpawnerTable(w io.Writer, spawners []kelosv1alpha1.TaskSpawner, al
 		age := duration.HumanDuration(time.Since(s.CreationTimestamp.Time))
 		source := ""
 		if s.Spec.When.GitHubIssues != nil {
-			if s.Spec.TaskTemplate.WorkspaceRef != nil {
-				source = s.Spec.TaskTemplate.WorkspaceRef.Name
-			} else {
-				source = "GitHub Issues"
-			}
+			source = "GitHub Issues"
 		} else if s.Spec.When.GitHubPullRequests != nil {
-			if s.Spec.TaskTemplate.WorkspaceRef != nil {
-				source = s.Spec.TaskTemplate.WorkspaceRef.Name
-			} else {
-				source = "GitHub Pull Requests"
-			}
+			source = "GitHub Pull Requests"
 		} else if s.Spec.When.Jira != nil {
 			source = s.Spec.When.Jira.Project
 		} else if s.Spec.When.Cron != nil {
@@ -181,6 +173,8 @@ func printTaskSpawnerTable(w io.Writer, spawners []kelosv1alpha1.TaskSpawner, al
 			source = "Linear Webhook"
 		} else if s.Spec.When.GenericWebhook != nil {
 			source = "Generic Webhook (" + s.Spec.When.GenericWebhook.Source + ")"
+		} else if s.Spec.When.Slack != nil {
+			source = "Slack"
 		}
 		if allNamespaces {
 			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\t%d\t%s\n",
@@ -269,6 +263,22 @@ func printTaskSpawnerDetail(w io.Writer, ts *kelosv1alpha1.TaskSpawner) {
 		gw := ts.Spec.When.GenericWebhook
 		printField(w, "Source", "Generic Webhook")
 		printField(w, "Webhook Source", gw.Source)
+	} else if ts.Spec.When.Slack != nil {
+		sl := ts.Spec.When.Slack
+		printField(w, "Source", "Slack")
+		if len(sl.Channels) > 0 {
+			printField(w, "Channels", fmt.Sprintf("%v", sl.Channels))
+		}
+		if len(sl.Triggers) > 0 {
+			patterns := make([]string, len(sl.Triggers))
+			for i, tr := range sl.Triggers {
+				patterns[i] = tr.Pattern
+			}
+			printField(w, "Triggers", fmt.Sprintf("%v", patterns))
+		}
+		if len(sl.ExcludePatterns) > 0 {
+			printField(w, "Exclude Patterns", fmt.Sprintf("%v", sl.ExcludePatterns))
+		}
 	}
 	printField(w, "Task Type", ts.Spec.TaskTemplate.Type)
 	if ts.Spec.TaskTemplate.Model != "" {
